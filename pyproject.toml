@@ -1,0 +1,64 @@
+[project]
+name = "prediction-market-api"
+version = "0.1.0"
+description = "Read-only prediction-market analysis API (Polymarket + Kalshi) -> probabilities -> Postgres."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+    "asyncpg>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+]
+
+[project.optional-dependencies]
+# v2 on-chain smart-money enrichment; only needed if you enable the Polygon reader.
+onchain = ["web3>=6.15"]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+ingest = "app.ingest:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "app",
+    "app.core",
+    "app.models",
+    "app.sources",
+    "app.analysis",
+    "app.persistence",
+    "app.llm",
+    "app.services",
+    "app.api",
+]
+
+[tool.setuptools.package-data]
+"app.persistence" = ["schema.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+ignore_missing_imports = true
