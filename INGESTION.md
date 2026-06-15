@@ -1,4 +1,4 @@
-# INGESTION.md
+INGESTION.md
 
 The data model, the priority/change/TTL rules, and how to run the ingester. This is the
 write-side half of the system; `ARCHITECTURE.md` covers the whole.
