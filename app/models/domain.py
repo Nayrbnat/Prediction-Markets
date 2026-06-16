@@ -35,6 +35,10 @@ class MarketRef(BaseModel):
     liquidity: Decimal | None = None
     topic: str | None = None
     category: str | None = None
+    quoted_prices: list[Decimal] | None = Field(
+        default=None,
+        description="Quick-read price per outcome (0..1), aligned to `outcomes`, from discovery.",
+    )
 
 
 class OrderBookTop(BaseModel):
