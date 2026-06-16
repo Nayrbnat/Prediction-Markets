@@ -6,13 +6,41 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.models.domain import MarketObservation
+from app.models.domain import MarketObservation, MarketRef, OrderBookTop
+from app.models.provenance import Venue
 from app.models.responses import HistoryPoint
 from app.persistence.repository import MarketRepository
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class FakeGateway:
+    """In-memory Gateway: returns canned refs per topic and books per token id."""
+
+    def __init__(
+        self,
+        refs_by_topic: dict[str, list[MarketRef]] | None = None,
+        books: dict[str, OrderBookTop] | None = None,
+    ) -> None:
+        self.refs: dict[str, list[MarketRef]] = refs_by_topic or {}
+        self.books: dict[str, OrderBookTop] = books or {}
+        self.closed = False
+
+    async def discover(
+        self, topic: str, *, venues: list[Venue] | None = None, limit: int = 50
+    ) -> list[MarketRef]:
+        refs = self.refs.get(topic, [])
+        if venues is not None:
+            refs = [r for r in refs if r.venue in venues]
+        return list(refs)
+
+    async def order_book(self, token_id: str) -> OrderBookTop | None:
+        return self.books.get(token_id)
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 class InMemoryMarketRepository(MarketRepository):

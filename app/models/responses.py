@@ -22,6 +22,15 @@ class HealthStatus(BaseModel):
     version: str = __version__
 
 
+class RefreshResult(BaseModel):
+    """Result of one ingestion run (the cron target)."""
+
+    status: str = "ok"
+    markets: int
+    changes: int
+    purged: int
+
+
 class VenueAvailability(BaseModel):
     """Which signals a venue contributed for this topic (degrade-gracefully record)."""
 

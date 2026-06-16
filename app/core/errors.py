@@ -64,7 +64,7 @@ def install_error_handlers(app: FastAPI) -> None:
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         logger.warning(
             "app.error",
-            extra={"code": exc.code, "status": exc.status_code, "message": exc.message},
+            extra={"code": exc.code, "status": exc.status_code, "err_msg": exc.message},
         )
         body: dict[str, object] = {"error": exc.code, "message": exc.message}
         if exc.detail is not None:
