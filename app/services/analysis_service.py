@@ -6,6 +6,8 @@ Live external fetches only happen during the ingestion cron/CLI run
 
 from __future__ import annotations
 
+from datetime import date
+
 from app.core.logging import get_logger
 from app.models.domain import EventDistribution, MarketObservation, MarketRef
 from app.models.requests import AnalyzeRequest
@@ -25,7 +27,13 @@ def _group_by_market(
     return groups
 
 
-def _from_store(topic: str, observations: list[MarketObservation], *, stale: bool) -> TopicAnalysis:
+def _from_store(
+    topic: str,
+    observations: list[MarketObservation],
+    *,
+    stale: bool,
+    as_of: date | None = None,
+) -> TopicAnalysis:
     distributions: list[EventDistribution] = []
     markets: list[MarketRef] = []
     matched_venues: set[str] = set()
@@ -40,7 +48,11 @@ def _from_store(topic: str, observations: list[MarketObservation], *, stale: boo
         )
         for v in ("polymarket", "kalshi")
     ]
-    notes = ["served from store without a live refresh"] if stale else []
+    notes: list[str] = []
+    if stale:
+        notes.append("served from store without a live refresh")
+    if as_of is not None:
+        notes.append(f"as of {as_of}")
     return TopicAnalysis(
         topic=topic,
         stale=stale,
@@ -62,8 +74,9 @@ async def analyze(
     TopicAnalysis with a clear note — never call the external gateway.
     """
     topic = request.topic
+    as_of: date | None = request.as_of
 
-    stored = await repo.read_topic(topic) if repo is not None else []
+    stored = await repo.read_topic(topic, as_of=as_of) if repo is not None else []
     if not stored:
         logger.info("analyze.no_data", extra={"topic": topic})
         availability = [
@@ -79,5 +92,10 @@ async def analyze(
             notes=["no ingested data for topic"],
         )
 
-    logger.info("analyze.served_from_store", extra={"topic": topic, "rows": len(stored)})
-    return _from_store(topic, stored, stale=True)
+    # as_of queries are not stale (you asked for a specific date)
+    stale = as_of is None
+    logger.info(
+        "analyze.served_from_store",
+        extra={"topic": topic, "rows": len(stored), "as_of": str(as_of)},
+    )
+    return _from_store(topic, stored, stale=stale, as_of=as_of)

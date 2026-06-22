@@ -1,16 +1,16 @@
 """The cron/CLI ingestion run, as named steps:
-discover -> build observations -> bulk upsert -> derive changes from returned rows -> purge.
+start_run → discover → build observations → write_snapshots →
+upsert_market_topics → refresh_latest → finish_run.
 
-No N+1 reads: upsert_observations returns the upserted rows with previous_probability
-and probability_delta already computed by the DB SET clause. The service derives
-material change-log entries in Python from those returned rows.
+Append-only: each daily run inserts one snapshot per series.
+Same-day re-runs are idempotent (ON CONFLICT DO UPDATE).
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
-from app.analysis.changes import probability_change
 from app.config import Settings
 from app.core.logging import get_logger
 from app.models.domain import MarketObservation
@@ -43,63 +43,73 @@ async def _ingest_topic(
     return observations
 
 
-def _material_changes(
-    upserted: list[MarketObservation],
-    *,
-    settings: Settings,
-) -> list[MarketObservation]:
-    """Pure: filter upserted rows to those with material probability moves.
-
-    The DB RETURNING clause gives back previous_probability and probability_delta on
-    each upserted row. Apply the same analysis/changes.probability_change threshold
-    so materiality logic stays exclusively in analysis/.
-    """
-    result: list[MarketObservation] = []
-    for row in upserted:
-        if not row.tracked:
-            continue
-        if row.previous_probability is None:
-            continue  # first observation — no move to log
-        change = probability_change(
-            row.previous_probability,
-            row.probability,
-            material_threshold=settings.material_change,
-        )
-        if change.material:
-            result.append(row)
-    return result
-
-
 async def run_ingestion(
     *, repo: MarketRepository, gateway: Gateway, settings: Settings
 ) -> RefreshResult:
     topics = settings.topics
-    logger.info("ingestion.start", extra={"topics": len(topics)})
-
-    # Fan-out discovery across topics — no DB reads inside _ingest_topic.
-    results = await asyncio.gather(
-        *(_ingest_topic(gateway, settings, t) for t in topics),
-        return_exceptions=True,
-    )
-
-    all_obs: list[MarketObservation] = []
-    for topic, result in zip(topics, results, strict=False):
-        if isinstance(result, BaseException):
-            logger.warning("ingestion.topic_failed", extra={"topic": topic, "error": str(result)})
-            continue
-        all_obs.extend(result)
-
-    # Single bulk upsert — returns rows with previous_probability/delta from the DB.
-    upserted = await repo.upsert_observations(all_obs)
-
-    # Derive material changes in Python — no second round-trip.
-    material = _material_changes(upserted, settings=settings)
-
-    await repo.append_changes(material)
-    purged = await repo.purge_stale(settings.retention_days)
-
+    snapshot_date = datetime.now(timezone.utc).date()
     logger.info(
-        "ingestion.done",
-        extra={"markets": len(all_obs), "changes": len(material), "purged": purged},
+        "ingestion.start",
+        extra={"topics": len(topics), "snapshot_date": str(snapshot_date)},
     )
-    return RefreshResult(markets=len(all_obs), changes=len(material), purged=purged)
+
+    run_id = await repo.start_run(snapshot_date)
+
+    try:
+        # Fan-out discovery across topics — no DB reads inside _ingest_topic.
+        results = await asyncio.gather(
+            *(_ingest_topic(gateway, settings, t) for t in topics),
+            return_exceptions=True,
+        )
+
+        all_obs: list[MarketObservation] = []
+        for topic, result in zip(topics, results, strict=False):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "ingestion.topic_failed",
+                    extra={"topic": topic, "error": str(result)},
+                )
+                continue
+            all_obs.extend(result)
+
+        # Bulk write snapshots (idempotent same-day).
+        rows = await repo.write_snapshots(all_obs, snapshot_date, run_id)
+
+        # Build and upsert topic-mapping pairs.
+        # One pair per unique (venue, market_key, topic) — sourced from observations.
+        topic_pairs: dict[tuple[str, str, str], dict] = {}
+        for obs in all_obs:
+            if obs.topic is None:
+                continue
+            key = (obs.venue, obs.market_key, obs.topic)
+            existing = topic_pairs.get(key)
+            if existing is None:
+                topic_pairs[key] = {
+                    "venue": obs.venue,
+                    "market_key": obs.market_key,
+                    "topic": obs.topic,
+                    "category": obs.category,
+                    "priority": obs.priority,
+                    "tracked": obs.tracked,
+                    "event_title": obs.event_title,
+                }
+            else:
+                # Escalate flags if same pair appears twice (duplicate topics in obs).
+                if obs.priority == "high" or existing["priority"] == "high":
+                    existing["priority"] = "high"
+                existing["tracked"] = existing["tracked"] or obs.tracked
+
+        await repo.upsert_market_topics(list(topic_pairs.values()))
+        await repo.refresh_latest()
+        await repo.finish_run(run_id, "ok", len(topics), rows)
+
+    except Exception as exc:
+        logger.error("ingestion.failed", extra={"error": str(exc), "run_id": run_id})
+        try:
+            await repo.finish_run(run_id, "failed", len(topics), 0)
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+
+    logger.info("ingestion.done", extra={"markets": len(all_obs), "rows_written": rows})
+    return RefreshResult(markets=rows, changes=0, purged=0)

@@ -26,7 +26,7 @@ def test_analyze_endpoint_with_store_data() -> None:
     app = create_app()
     repo = InMemoryMarketRepository()
     asyncio.run(
-        repo.upsert_observations(
+        repo.seed(
             [
                 MarketObservation(
                     venue="polymarket", market_key="m1", outcome="Yes",
@@ -66,7 +66,7 @@ def test_markets_search_endpoint() -> None:
     app = create_app()
     repo = InMemoryMarketRepository()
     asyncio.run(
-        repo.upsert_observations(
+        repo.seed(
             [
                 MarketObservation(
                     venue="polymarket", market_key="m1", outcome="Yes",
@@ -105,7 +105,7 @@ def test_market_detail_endpoint() -> None:
     app = create_app()
     repo = InMemoryMarketRepository()
     asyncio.run(
-        repo.upsert_observations(
+        repo.seed(
             [
                 MarketObservation(
                     venue="polymarket", market_key="m1", outcome="Yes",

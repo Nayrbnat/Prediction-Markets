@@ -75,7 +75,11 @@ class EventDistribution(BaseModel):
 
 
 class MarketObservation(BaseModel):
-    """The persisted row shape (one per venue/market_key/outcome)."""
+    """The persisted row shape (one per venue/market_key/outcome).
+
+    Used by pricing helpers (distribution_from_observations, ref_from_observations)
+    and by ingestion (observations_from_distribution). Kept for compatibility.
+    """
 
     venue: Venue
     market_key: str
