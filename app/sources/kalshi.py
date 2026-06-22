@@ -1,7 +1,10 @@
 """Kalshi — discovery + prices via the official Trade API (public reads, no auth).
 
-Kalshi quotes in cents (0-100); we convert to 0..1 probability units here so the
-analysis layer stays venue-agnostic. NO wallet logic — Kalshi has no chain.
+Verified live 2026-06-16: the API returns DOLLAR-denominated string prices
+(``yes_bid_dollars`` etc., already in 0..1 probability units — NOT cents) and
+fixed-point string sizes/volumes (``volume_24h_fp``, ``volume_fp``). The legacy
+cent fields (``yes_bid``/``yes_ask``/``last_price``) have been removed.
+NO wallet logic — Kalshi has no chain.
 """
 
 from __future__ import annotations
@@ -20,15 +23,16 @@ logger = get_logger(__name__)
 
 VENUE = "kalshi"
 _limiter = AsyncRateLimiter(rate_per_sec=8.0)
-_CENTS = Decimal(100)
 
 
-def _cents(value: object) -> Decimal | None:
-    try:
-        c = Decimal(str(value))
-    except (InvalidOperation, ValueError, TypeError):
+def _money(value: object) -> Decimal | None:
+    """Parse a dollar-denominated string (0..1 probability units) to Decimal."""
+    if value is None:
         return None
-    return c / _CENTS
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _mid(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
@@ -41,20 +45,17 @@ def _market_to_ref(market: dict, *, topic: str) -> MarketRef | None:
     ticker = market.get("ticker")
     if not ticker:
         raise SchemaDriftError("kalshi market missing 'ticker'")
-    yes = _mid(_cents(market.get("yes_bid")), _cents(market.get("yes_ask")))
-    no = _mid(_cents(market.get("no_bid")), _cents(market.get("no_ask")))
+    yes = _mid(_money(market.get("yes_bid_dollars")), _money(market.get("yes_ask_dollars")))
+    no = _mid(_money(market.get("no_bid_dollars")), _money(market.get("no_ask_dollars")))
     if yes is None:
-        yes = _cents(market.get("last_price"))
-    if yes is not None and no is None:
-        no = Decimal(1) - yes
+        yes = _money(market.get("last_price_dollars"))
     if yes is None:
         return None  # no usable price; drop rather than fabricate
-    volume = None
-    try:
-        if market.get("volume") is not None:
-            volume = Decimal(str(market["volume"]))
-    except (InvalidOperation, ValueError):
-        volume = None
+    if no is None:
+        no = Decimal(1) - yes
+    volume = _money(market.get("volume_24h_fp"))
+    if volume is None:
+        volume = _money(market.get("volume_fp"))
     return MarketRef(
         venue=VENUE,
         event_id=str(market.get("event_ticker", ticker)),
@@ -64,7 +65,7 @@ def _market_to_ref(market: dict, *, topic: str) -> MarketRef | None:
         resolved=str(market.get("status", "")) in {"closed", "settled", "determined"},
         volume=volume,
         topic=topic,
-        quoted_prices=[yes, no if no is not None else Decimal(1) - yes],
+        quoted_prices=[yes, no],
     )
 
 
@@ -95,5 +96,17 @@ async def discover(
         ref = _market_to_ref(market, topic=topic)
         if ref is not None and not ref.resolved:
             refs.append(ref)
-    logger.info("kalshi.discover", extra={"topic": topic, "markets": len(refs)})
+
+    if series_ticker is None and not refs:
+        # Verified live: the unfiltered open-markets scan rarely matches a free-text
+        # topic (top markets are multi-leg combos). Map the topic to a series ticker
+        # via KALSHI_SERIES_MAP for reliable Kalshi coverage.
+        logger.warning(
+            "kalshi.no_series_no_match",
+            extra={"topic": topic, "hint": "set KALSHI_SERIES_MAP for this topic"},
+        )
+    logger.info(
+        "kalshi.discover",
+        extra={"topic": topic, "markets": len(refs), "series_ticker": series_ticker},
+    )
     return refs

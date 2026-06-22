@@ -147,7 +147,17 @@ This is where the "extract from blockchain" requirement lives. It is Polymarket-
 
 **Pagination is cursor-based:** read `cursor` from the response, pass it back; empty cursor = done.
 
-**Reading the probability.** Kalshi quotes in **cents (0–100)**: the market's `yes_bid`, `yes_ask`, `no_bid`, `no_ask`, `last_price` are cents. **Implied probability ≈ price / 100** (e.g. `yes_ask = 65` ⇒ ~65%). Use the yes mid `((yes_bid + yes_ask)/2)/100` as the analogue of Polymarket's order-book mid. *(Verify the exact field names against a live `GET /markets/{ticker}` response at build time.)*
+**Reading the probability.** ⚠️ **Verified live 2026-06-16 — the field names changed.** The legacy cent fields (`yes_bid`/`yes_ask`/`no_bid`/`no_ask`/`last_price`/`volume`) **no longer exist**. The current `/markets` response returns **dollar-denominated string** prices already in 0..1 probability units, plus fixed-point string sizes/volumes:
+
+| Field | Meaning |
+|---|---|
+| `yes_bid_dollars`, `yes_ask_dollars`, `no_bid_dollars`, `no_ask_dollars` | best quotes, **dollar strings 0.0000–1.0000** (= probability directly, no /100) |
+| `last_price_dollars`, `previous_price_dollars` | last / previous trade price (dollar string) |
+| `volume_fp`, `volume_24h_fp`, `open_interest_fp`, `*_size_fp` | fixed-point **strings** (e.g. `"5000"`) |
+| `liquidity_dollars`, `notional_value_dollars` | dollar strings |
+| `ticker`, `event_ticker`, `title`, `status` | identity/classification (`status` returns `active` for open markets) |
+
+So the yes probability is the mid `(Decimal(yes_bid_dollars) + Decimal(yes_ask_dollars)) / 2` — **no division by 100**. Parse every price string with `Decimal`. Response is `{"cursor": ..., "markets": [...]}`.
 
 ```python
 async def kalshi_markets(series_ticker: str) -> list[dict]:
@@ -155,7 +165,9 @@ async def kalshi_markets(series_ticker: str) -> list[dict]:
     async with httpx.AsyncClient(base_url=base, timeout=15) as c:
         r = await c.get("/markets", params={"series_ticker": series_ticker, "status": "open"})
         r.raise_for_status()
-        return r.json()["markets"]   # each: ticker, title, yes_bid, yes_ask, last_price, volume, ...
+        # each market: ticker, title, yes_bid_dollars, yes_ask_dollars, last_price_dollars,
+        #              volume_24h_fp, status, ...
+        return r.json()["markets"]
 ```
 
 **Auth (only for trading/portfolio/WebSocket, which we never do):** an API key id plus an **RSA private key (PEM)**; requests are signed. Market-data reads above need none of this. Kalshi tokens for the authenticated paths expire ~every 30 minutes — irrelevant to read-only ingestion.
