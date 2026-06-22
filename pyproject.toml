@@ -41,6 +41,7 @@ packages = [
     "app.persistence",
     "app.services",
     "app.api",
+    "app.notifications",
 ]
 
 [tool.setuptools.package-data]

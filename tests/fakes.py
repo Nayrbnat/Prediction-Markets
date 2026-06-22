@@ -5,7 +5,9 @@ Used by persistence and service tests so the suite needs no database.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
+from app.models.digest import MoverItem
 from app.models.domain import MarketObservation, MarketRef, OrderBookTop
 from app.models.provenance import Venue
 from app.models.responses import HistoryPoint
@@ -237,6 +239,73 @@ class InMemoryMarketRepository(MarketRepository):
         for key in doomed:
             del self.snapshots[key]
         return len(doomed)
+
+    def _tracked_market_keys(self) -> set[tuple[str, str]]:
+        """Return (venue, market_key) pairs with at least one tracked topic."""
+        return {
+            (v, mk)
+            for (v, mk, _t), meta in self.topic_pairs.items()
+            if meta.get("tracked", False)
+        }
+
+    async def read_movers(
+        self, threshold: Decimal, limit: int = 50
+    ) -> list[MoverItem]:
+        """Compare the two most recent snapshot dates per tracked series."""
+        tracked = self._tracked_market_keys()
+        # Collect all snapshot entries per series
+        series: dict[tuple[str, str, str], list[tuple[date, MarketObservation]]] = {}
+        for (snap_date, venue, market_key, outcome), obs in self.snapshots.items():
+            if (venue, market_key) not in tracked:
+                continue
+            key = (venue, market_key, outcome)
+            series.setdefault(key, []).append((snap_date, obs))
+
+        movers: list[MoverItem] = []
+        for (venue, market_key, outcome), entries in series.items():
+            if len(entries) < 2:
+                continue
+            entries.sort(key=lambda x: x[0])
+            prev_date, prev_obs = entries[-2]
+            curr_date, curr_obs = entries[-1]
+            if prev_date == curr_date:
+                continue
+            delta = curr_obs.probability - prev_obs.probability
+            if abs(delta) < threshold:
+                continue
+            movers.append(
+                MoverItem(
+                    venue=venue,
+                    event_title=curr_obs.event_title,
+                    market_key=market_key,
+                    outcome=outcome,
+                    previous=prev_obs.probability,
+                    current=curr_obs.probability,
+                    delta=delta,
+                    close_date=curr_obs.close_date,
+                )
+            )
+
+        movers.sort(key=lambda m: abs(m.delta), reverse=True)
+        return movers[:limit]
+
+    async def read_tracked_current(self) -> list[MarketObservation]:
+        """Latest observations for all tracked markets, one row per series."""
+        tracked = self._tracked_market_keys()
+        latest = self._latest_per_series()
+        result = []
+        seen: set[tuple[str, str, str]] = set()
+        for (venue, market_key, outcome), obs in latest.items():
+            if (venue, market_key) not in tracked:
+                continue
+            key = (venue, market_key, outcome)
+            if key in seen:
+                continue
+            seen.add(key)
+            enriched = self._enrich_with_topic(obs, venue, market_key)
+            result.append(enriched)
+        result.sort(key=lambda o: (o.venue, o.market_key, o.outcome))
+        return result
 
     # ------------------------------------------------------------------
     # Convenience helpers for seeding tests (mirrors the old upsert_observations API).

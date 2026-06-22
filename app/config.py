@@ -54,6 +54,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "json"  # "json" | "console"
 
+    # ---- Daily digest ---------------------------------------------------
+    mover_threshold: Decimal = Decimal("0.10")
+    digest_enabled: bool = False
+    digest_from: str = ""
+    digest_to: str = ""  # comma-separated recipient list
+
+    # ---- SMTP (leave blank to use ConsoleEmailSender) -------------------
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+
     # ---- v2 only (unused in v1) ----------------------------------------
     polygon_rpc_url: str | None = None
     ctf_exchange_address: str | None = None
@@ -78,6 +90,11 @@ class Settings(BaseSettings):
     @property
     def kalshi_categories(self) -> dict[str, str]:
         return json.loads(self.kalshi_category_map or "{}")
+
+    @property
+    def digest_recipients(self) -> list[str]:
+        """Parsed list of digest email recipients from the CSV ``digest_to`` field."""
+        return _csv(self.digest_to)
 
 
 @lru_cache

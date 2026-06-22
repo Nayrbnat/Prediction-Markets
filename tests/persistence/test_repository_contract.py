@@ -206,3 +206,157 @@ def test_dedupe_preserves_distinct_keys_and_order() -> None:
         ("0xabc", "No"),
         ("0xdef", "Yes"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Digest: read_movers + read_tracked_current contract tests
+# ---------------------------------------------------------------------------
+
+
+async def test_read_movers_returns_tracked_mover() -> None:
+    """A tracked outcome that moved >= threshold appears in read_movers."""
+    repo = InMemoryMarketRepository()
+    # Two snapshot dates — move of 0.15 (>= 0.10 threshold)
+    await repo.seed([_obs("0.50", tracked=True, priority="high")], snapshot_date=YESTERDAY)
+    await repo.seed([_obs("0.65", tracked=True, priority="high")], snapshot_date=TODAY)
+
+    movers = await repo.read_movers(Decimal("0.10"))
+    assert len(movers) == 1
+    mover = movers[0]
+    assert mover.outcome == "Yes"
+    assert mover.previous == Decimal("0.50")
+    assert mover.current == Decimal("0.65")
+    assert mover.delta == Decimal("0.15")
+
+
+async def test_read_movers_excludes_small_move() -> None:
+    """A move below threshold must NOT appear in read_movers."""
+    repo = InMemoryMarketRepository()
+    await repo.seed([_obs("0.50", tracked=True, priority="high")], snapshot_date=YESTERDAY)
+    await repo.seed([_obs("0.55", tracked=True, priority="high")], snapshot_date=TODAY)
+
+    movers = await repo.read_movers(Decimal("0.10"))
+    assert movers == []
+
+
+async def test_read_movers_excludes_untracked() -> None:
+    """An untracked market must NEVER appear in read_movers regardless of move size."""
+    repo = InMemoryMarketRepository()
+    # Large move but NOT tracked
+    await repo.seed([_obs("0.10", tracked=False, priority="normal")], snapshot_date=YESTERDAY)
+    await repo.seed([_obs("0.90", tracked=False, priority="normal")], snapshot_date=TODAY)
+
+    movers = await repo.read_movers(Decimal("0.10"))
+    assert movers == []
+
+
+async def test_read_movers_sorted_by_abs_delta_desc() -> None:
+    """read_movers returns rows sorted by |delta| descending."""
+    repo = InMemoryMarketRepository()
+
+    big_mover = MarketObservation(
+        venue="polymarket", market_key="0xbig", outcome="Yes",
+        event_title="Big", topic="big", probability=Decimal("0.20"),
+        raw_price=Decimal("0.20"), tracked=True, priority="high",
+    )
+    small_mover = MarketObservation(
+        venue="polymarket", market_key="0xsmall", outcome="Yes",
+        event_title="Small", topic="small", probability=Decimal("0.40"),
+        raw_price=Decimal("0.40"), tracked=True, priority="high",
+    )
+    # Seed yesterday
+    await repo.seed([big_mover, small_mover], snapshot_date=YESTERDAY)
+
+    big_now = big_mover.model_copy(
+        update={"probability": Decimal("0.80"), "raw_price": Decimal("0.80")}
+    )
+    small_now = small_mover.model_copy(
+        update={"probability": Decimal("0.52"), "raw_price": Decimal("0.52")}
+    )
+    await repo.seed([big_now, small_now], snapshot_date=TODAY)
+
+    movers = await repo.read_movers(Decimal("0.10"))
+    assert len(movers) == 2
+    assert movers[0].market_key == "0xbig"   # |0.60| > |0.12|
+    assert movers[1].market_key == "0xsmall"
+
+
+async def test_read_movers_no_topic_fanout() -> None:
+    """A tracked market under TWO topics must yield ONE mover row with the correct delta.
+
+    Regression: a fan-out JOIN on market_topics (M2M) duplicates every snapshot row
+    per topic, corrupting the LAG window so the latest row's "previous" is a duplicate
+    of the same date (delta 0 → dropped). The EXISTS predicate keeps one row per
+    (snapshot_date, series), so LAG correctly compares to yesterday.
+    """
+    repo = InMemoryMarketRepository()
+
+    # Two snapshot dates, ≥10pp move day-over-day.
+    yest = _obs("0.50", tracked=True, priority="high", topic="fed rate decision")
+    today = _obs("0.65", tracked=True, priority="high", topic="fed rate decision")
+    run_y = await repo.start_run(YESTERDAY)
+    await repo.write_snapshots([yest], YESTERDAY, run_y)
+    await repo.finish_run(run_y, "ok", 1, 1)
+    run_t = await repo.start_run(TODAY)
+    await repo.write_snapshots([today], TODAY, run_t)
+    await repo.finish_run(run_t, "ok", 1, 1)
+
+    # Map the SAME market to two tracked topics.
+    await repo.upsert_market_topics([
+        {"venue": "polymarket", "market_key": "0xabc", "topic": "fed rate decision",
+         "priority": "high", "tracked": True, "event_title": "Fed"},
+        {"venue": "polymarket", "market_key": "0xabc", "topic": "fed interest rate",
+         "priority": "high", "tracked": True, "event_title": "Fed"},
+    ])
+
+    movers = await repo.read_movers(Decimal("0.10"))
+    # Exactly ONE row for the (venue, market_key, outcome) series — not duplicated.
+    assert len(movers) == 1
+    mover = movers[0]
+    assert mover.market_key == "0xabc"
+    assert mover.outcome == "Yes"
+    assert mover.previous == Decimal("0.50")
+    assert mover.current == Decimal("0.65")
+    assert mover.delta == Decimal("0.15")
+
+
+async def test_read_tracked_current_returns_latest_per_series() -> None:
+    """read_tracked_current returns the latest row per series for tracked markets."""
+    repo = InMemoryMarketRepository()
+    await repo.seed([_obs("0.40", tracked=True, priority="high")], snapshot_date=YESTERDAY)
+    await repo.seed([_obs("0.55", tracked=True, priority="high")], snapshot_date=TODAY)
+
+    tracked = await repo.read_tracked_current()
+    assert len(tracked) == 1
+    assert tracked[0].probability == Decimal("0.55")
+    assert tracked[0].tracked is True
+
+
+async def test_read_tracked_current_excludes_untracked() -> None:
+    """read_tracked_current must NOT include untracked markets."""
+    repo = InMemoryMarketRepository()
+    await repo.seed([_obs("0.60", tracked=False, priority="normal")], snapshot_date=TODAY)
+
+    tracked = await repo.read_tracked_current()
+    assert tracked == []
+
+
+async def test_read_tracked_current_no_topic_fanout() -> None:
+    """A tracked market under two topics returns exactly its distinct outcomes."""
+    repo = InMemoryMarketRepository()
+    run_id = await repo.start_run(TODAY)
+    yes = _obs("0.60", tracked=True, priority="high")
+    no = yes.model_copy(update={"outcome": "No", "probability": Decimal("0.40")})
+    await repo.write_snapshots([yes, no], TODAY, run_id)
+    await repo.upsert_market_topics([
+        {"venue": "polymarket", "market_key": "0xabc", "topic": "fed",
+         "priority": "high", "tracked": True, "event_title": "Fed"},
+        {"venue": "polymarket", "market_key": "0xabc", "topic": "rates",
+         "priority": "high", "tracked": True, "event_title": "Fed"},
+    ])
+    await repo.finish_run(run_id, "ok", 2, 2)
+
+    tracked = await repo.read_tracked_current()
+    outcomes = [o.outcome for o in tracked]
+    assert len(outcomes) == len(set(outcomes)), "duplicate outcomes from topic fan-out"
+    assert sorted(outcomes) == ["No", "Yes"]

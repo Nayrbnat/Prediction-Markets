@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from app.core.errors import PersistenceError
 from app.core.logging import get_logger
+from app.models.digest import MoverItem
 from app.models.domain import MarketObservation
 from app.models.responses import HistoryPoint
 
@@ -127,6 +129,27 @@ class MarketRepository(ABC):
     @abstractmethod
     async def purge_before(self, cutoff_date: date) -> int:
         """Delete snapshots older than cutoff_date. Returns deleted count."""
+        ...
+
+    @abstractmethod
+    async def read_movers(
+        self, threshold: Decimal, limit: int = 50
+    ) -> list[MoverItem]:
+        """Day-over-day movers for TRACKED markets only.
+
+        For each (venue, market_key, outcome) series with at least two snapshot
+        dates, compare the two most recent dates. Return those where
+        |current - previous| >= threshold, sorted by |delta| DESC.
+        """
+        ...
+
+    @abstractmethod
+    async def read_tracked_current(self) -> list[MarketObservation]:
+        """Current (latest) observations for all tracked markets.
+
+        Equivalent to market_latest JOIN market_topics WHERE tracked=true,
+        DISTINCT ON (venue, market_key, outcome) to avoid topic fan-out.
+        """
         ...
 
 
@@ -286,6 +309,67 @@ FROM market_snapshots
 WHERE venue = $1 AND market_key = $2 AND outcome = $3
 ORDER BY snapshot_date DESC
 LIMIT $4
+"""
+
+# Day-over-day movers: tracked markets only, two most recent snapshot dates per series.
+# Uses LAG() window function partitioned by (venue, market_key, outcome) over
+# snapshot_date order, then filters to the latest row per series.
+#
+# CRITICAL: market_topics is M2M (PK venue, market_key, topic). A plain JOIN would
+# fan out each snapshot row once per topic, duplicating snapshot_dates within a
+# partition and corrupting LAG/ROW_NUMBER (LAG could return a duplicate of the SAME
+# date → delta 0 → the mover is silently dropped). DISTINCT ON cannot fix this
+# because the corruption happens before the final SELECT. We filter tracked
+# membership with an EXISTS predicate so each snapshot row appears exactly once.
+_READ_MOVERS = """
+WITH ranked AS (
+    SELECT
+        s.venue, s.market_key, s.outcome, s.event_title, s.close_date,
+        s.snapshot_date,
+        s.probability AS current_prob,
+        LAG(s.probability) OVER (
+            PARTITION BY s.venue, s.market_key, s.outcome
+            ORDER BY s.snapshot_date
+        ) AS prev_prob,
+        ROW_NUMBER() OVER (
+            PARTITION BY s.venue, s.market_key, s.outcome
+            ORDER BY s.snapshot_date DESC
+        ) AS rn
+    FROM market_snapshots s
+    WHERE EXISTS (
+        SELECT 1 FROM market_topics mt
+        WHERE mt.venue = s.venue
+          AND mt.market_key = s.market_key
+          AND mt.tracked = true
+    )
+)
+SELECT
+    venue, market_key, outcome, event_title, close_date,
+    current_prob, prev_prob,
+    (current_prob - prev_prob) AS delta
+FROM ranked
+WHERE rn = 1
+  AND prev_prob IS NOT NULL
+  AND abs(current_prob - prev_prob) >= $1
+ORDER BY abs(current_prob - prev_prob) DESC
+LIMIT $2
+"""
+
+# Current state for all tracked markets — DISTINCT ON to prevent topic fan-out.
+_READ_TRACKED_CURRENT = """
+SELECT DISTINCT ON (ml.venue, ml.market_key, ml.outcome)
+    ml.venue, ml.market_key, ml.outcome, ml.event_title,
+    ml.probability, ml.raw_price,
+    ml.volume_24h, ml.volume_total, ml.liquidity,
+    ml.close_date, ml.best_bid, ml.best_ask, ml.spread,
+    ml.last_trade_price, ml.open_interest,
+    ml.confidence, ml.observed_at,
+    mt.topic, mt.category, mt.priority, mt.tracked
+FROM market_latest ml
+INNER JOIN market_topics mt
+    ON ml.venue = mt.venue AND ml.market_key = mt.market_key
+WHERE mt.tracked = true
+ORDER BY ml.venue, ml.market_key, ml.outcome
 """
 
 
@@ -503,3 +587,28 @@ class PostgresMarketRepository(MarketRepository):
         deleted = int(result.split()[-1]) if result else 0
         logger.info("repo.purge", extra={"deleted": deleted, "cutoff_date": str(cutoff_date)})
         return deleted
+
+    async def read_movers(
+        self, threshold: Decimal, limit: int = 50
+    ) -> list[MoverItem]:
+        try:
+            async with self._pool.acquire() as conn:
+                records = await conn.fetch(_READ_MOVERS, threshold, limit)
+        except Exception as exc:  # noqa: BLE001
+            raise PersistenceError(f"read_movers failed: {exc}") from exc
+        return [
+            MoverItem(
+                venue=r["venue"],
+                event_title=r["event_title"],
+                market_key=r["market_key"],
+                outcome=r["outcome"],
+                previous=r["prev_prob"],
+                current=r["current_prob"],
+                delta=r["delta"],
+                close_date=r["close_date"],
+            )
+            for r in records
+        ]
+
+    async def read_tracked_current(self) -> list[MarketObservation]:
+        return await self._fetch_obs(_READ_TRACKED_CURRENT)
