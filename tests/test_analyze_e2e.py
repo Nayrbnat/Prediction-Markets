@@ -25,13 +25,13 @@ def test_e2e_analyze_polymarket_only_degradation() -> None:
                     venue="polymarket", market_key="m1", outcome="Yes",
                     event_title="Fed decision in March", topic="fed rate decision",
                     probability=Decimal("0.62"), raw_price=Decimal("0.62"),
-                    volume=Decimal("5000"),
+                    volume_24h=Decimal("5000"),
                 ),
                 MarketObservation(
                     venue="polymarket", market_key="m1", outcome="No",
                     event_title="Fed decision in March", topic="fed rate decision",
                     probability=Decimal("0.38"), raw_price=Decimal("0.38"),
-                    volume=Decimal("5000"),
+                    volume_24h=Decimal("5000"),
                 ),
             ]
         )

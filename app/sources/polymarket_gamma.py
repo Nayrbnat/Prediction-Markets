@@ -11,7 +11,6 @@ child. Precise prices come from the CLOB client (binary events only). No analysi
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -21,6 +20,7 @@ from app.core.http import fetch_json
 from app.core.logging import get_logger
 from app.core.rate_limit import AsyncRateLimiter
 from app.models.domain import MarketRef
+from app.sources._util import parse_iso_datetime
 
 logger = get_logger(__name__)
 
@@ -50,22 +50,6 @@ def _dec(value: object) -> Decimal | None:
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
-        return None
-
-
-def _parse_close_date(value: object) -> datetime | None:
-    """Parse Gamma's ISO-8601 date strings (may end with 'Z') to UTC datetime."""
-    if value is None or value == "":
-        return None
-    try:
-        s = str(value).strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except (ValueError, TypeError):
         return None
 
 
@@ -129,7 +113,7 @@ def _binary_ref(
             outcome_volumes_24h=outcome_volumes_24h,
             outcome_volumes_total=outcome_volumes_total,
             open_interests=open_interests,
-            close_date=_parse_close_date(market.get("endDate") or market.get("endDateIso")),
+            close_date=parse_iso_datetime(market.get("endDate") or market.get("endDateIso")),
         )
     except (KeyError, TypeError, AttributeError) as exc:
         raise SchemaDriftError(f"gamma market shape unexpected: {exc}") from exc
@@ -195,7 +179,7 @@ def _multi_outcome_ref(
         outcome_volumes_24h=vols_24h,
         outcome_volumes_total=vols_total,
         open_interests=open_interests,
-        close_date=_parse_close_date(event.get("endDate")),
+        close_date=parse_iso_datetime(event.get("endDate")),
     )
 
 

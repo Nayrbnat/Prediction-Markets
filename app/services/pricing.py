@@ -129,7 +129,6 @@ def observations_from_distribution(
             category=category,
             probability=op.probability,
             raw_price=op.raw_price,
-            volume=ref.volume,
             volume_24h=op.volume_24h,
             volume_total=op.volume_total,
             liquidity=ref.liquidity,
@@ -184,6 +183,6 @@ def ref_from_observations(obs: list[MarketObservation]) -> MarketRef:
         outcomes=[o.outcome for o in obs],
         topic=first.topic,
         category=first.category,
-        volume=first.volume,
+        volume=first.volume_24h,
         liquidity=first.liquidity,
     )

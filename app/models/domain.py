@@ -31,6 +31,9 @@ class MarketRef(BaseModel):
     condition_id: str | None = None
     resolved: bool = False
     enable_order_book: bool = True
+    # Aggregate market volume used for the thin-market confidence flag in
+    # assess_confidence(); per-outcome volumes live in outcome_volumes_24h /
+    # outcome_volumes_total.
     volume: Decimal | None = None
     liquidity: Decimal | None = None
     topic: str | None = None
@@ -96,7 +99,7 @@ class MarketObservation(BaseModel):
     """The persisted row shape (one per venue/market_key/outcome).
 
     Used by pricing helpers (distribution_from_observations, ref_from_observations)
-    and by ingestion (observations_from_distribution). Kept for compatibility.
+    and by ingestion (observations_from_distribution).
     """
 
     venue: Venue
@@ -109,9 +112,6 @@ class MarketObservation(BaseModel):
     previous_probability: Decimal | None = None
     probability_delta: Decimal | None = None
     raw_price: Decimal
-    # volume replaced by volume_24h / volume_total; old scalar kept as alias for
-    # backward-compat with code that still writes it (deprecated — prefer the split).
-    volume: Decimal | None = None
     volume_24h: Decimal | None = None
     volume_total: Decimal | None = None
     liquidity: Decimal | None = None

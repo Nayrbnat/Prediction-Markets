@@ -14,7 +14,6 @@ Verified live 2026-06-22 against official docs:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -24,6 +23,7 @@ from app.core.http import fetch_json
 from app.core.logging import get_logger
 from app.core.rate_limit import AsyncRateLimiter
 from app.models.domain import MarketRef
+from app.sources._util import parse_iso_datetime
 
 logger = get_logger(__name__)
 
@@ -40,22 +40,6 @@ def _money(value: object) -> Decimal | None:
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
-        return None
-
-
-def _parse_close_date(value: object) -> datetime | None:
-    """Parse Kalshi's ISO-8601 close_time string to UTC datetime."""
-    if value is None or value == "":
-        return None
-    try:
-        s = str(value).strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except (ValueError, TypeError):
         return None
 
 
@@ -98,8 +82,10 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
     event_ticker = str(event.get("event_ticker", ""))
     event_title = str(event.get("title") or event.get("sub_title") or topic)
     event_category: str | None = event.get("category") or None
-    # close_time is at the event level; broadcast to all outcomes in the same event.
-    close_date = _parse_close_date(event.get("close_time"))
+    # close_time lives on each nested market (not the event). In a mutually-exclusive
+    # event all candidates resolve together, so take it from the first active market
+    # and broadcast it to all outcomes.
+    close_date = parse_iso_datetime(active[0].get("close_time"))
 
     if bool(event.get("mutually_exclusive", False)) and len(active) > 1:
         outcomes: list[str] = []
