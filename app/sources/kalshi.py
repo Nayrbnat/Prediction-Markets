@@ -30,7 +30,11 @@ logger = get_logger(__name__)
 
 VENUE = "kalshi"
 _limiter = AsyncRateLimiter(rate_per_sec=8.0)
-_TERMINAL_STATUS = {"closed", "settled", "determined", "finalized", "inactive"}
+# Official market status enum (docs.kalshi.com get-markets): initialized, inactive,
+# active, closed, determined, disputed, amended, finalized. Only "active" is open and
+# tradeable (the /events status=open filter returns markets as "active"); everything
+# else is pre-trade or terminal and must not be ingested as a live observation.
+_ACTIVE_STATUS = "active"
 _MAX_AUTO_SERIES = 5
 
 
@@ -58,7 +62,7 @@ def _yes_price(market: dict) -> Decimal | None:
 
 
 def _is_active(market: dict) -> bool:
-    return str(market.get("status", "")) not in _TERMINAL_STATUS
+    return str(market.get("status", "")) == _ACTIVE_STATUS
 
 
 def _event_volume(markets: list[dict]) -> Decimal | None:
@@ -70,9 +74,8 @@ def _event_volume(markets: list[dict]) -> Decimal | None:
     return sum(vols, Decimal(0)) if vols else None
 
 
-def _event_liquidity(markets: list[dict]) -> Decimal | None:
-    vals = [v for v in (_money(m.get("liquidity_dollars")) for m in markets) if v is not None]
-    return sum(vals, Decimal(0)) if vals else None
+# Kalshi `liquidity_dollars` is DEPRECATED per official docs ("will always return
+# '0.0000'"), so it carries no signal. We store NULL rather than a misleading 0.
 
 
 def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
@@ -123,7 +126,7 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 outcomes=outcomes,
                 resolved=False,
                 volume=_event_volume(active),
-                liquidity=_event_liquidity(active),
+                liquidity=None,  # deprecated upstream (always 0.0000) — store NULL
                 category=event_category,
                 topic=topic,
                 quoted_prices=prices,
@@ -157,7 +160,6 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
         vol_24h = _money(m.get("volume_24h_fp"))
         vol_total = _money(m.get("volume_fp"))
         oi = _money(m.get("open_interest_fp"))
-        liq = _money(m.get("liquidity_dollars"))
 
         refs.append(
             MarketRef(
@@ -167,8 +169,8 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 event_title=event_title,
                 outcomes=[label, "No"],
                 resolved=False,
-                volume=_money(m.get("volume_24h_fp")) or _money(m.get("volume_fp")),
-                liquidity=liq,
+                volume=vol_24h or vol_total,
+                liquidity=None,  # deprecated upstream (always 0.0000) — store NULL
                 category=event_category,
                 topic=topic,
                 quoted_prices=[yes, Decimal(1) - yes],
