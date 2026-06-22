@@ -14,6 +14,7 @@ Verified live 2026-06-22 against official docs:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -39,6 +40,22 @@ def _money(value: object) -> Decimal | None:
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
+        return None
+
+
+def _parse_close_date(value: object) -> datetime | None:
+    """Parse Kalshi's ISO-8601 close_time string to UTC datetime."""
+    if value is None or value == "":
+        return None
+    try:
+        s = str(value).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
         return None
 
 
@@ -81,16 +98,33 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
     event_ticker = str(event.get("event_ticker", ""))
     event_title = str(event.get("title") or event.get("sub_title") or topic)
     event_category: str | None = event.get("category") or None
+    # close_time is at the event level; broadcast to all outcomes in the same event.
+    close_date = _parse_close_date(event.get("close_time"))
 
     if bool(event.get("mutually_exclusive", False)) and len(active) > 1:
         outcomes: list[str] = []
         prices: list[Decimal] = []
+        best_bids: list[Decimal | None] = []
+        best_asks: list[Decimal | None] = []
+        last_trades: list[Decimal | None] = []
+        vols_24h: list[Decimal | None] = []
+        vols_total: list[Decimal | None] = []
+        open_interests: list[Decimal | None] = []
+
         for m in active:
             yes = _yes_price(m)
             if yes is None:
                 continue
             outcomes.append(str(m.get("yes_sub_title") or m.get("ticker")))
             prices.append(yes)
+            # Each candidate: yes_* fields are the per-outcome bid/ask/last.
+            best_bids.append(_money(m.get("yes_bid_dollars")))
+            best_asks.append(_money(m.get("yes_ask_dollars")))
+            last_trades.append(_money(m.get("last_price_dollars")))
+            vols_24h.append(_money(m.get("volume_24h_fp")))
+            vols_total.append(_money(m.get("volume_fp")))
+            open_interests.append(_money(m.get("open_interest_fp")))
+
         if not outcomes:
             return []
         return [
@@ -106,6 +140,13 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 category=event_category,
                 topic=topic,
                 quoted_prices=prices,
+                best_bids=best_bids,
+                best_asks=best_asks,
+                last_trades=last_trades,
+                outcome_volumes_24h=vols_24h,
+                outcome_volumes_total=vols_total,
+                open_interests=open_interests,
+                close_date=close_date,
             )
         ]
 
@@ -119,6 +160,18 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
         if yes is None:
             continue
         label = str(m.get("yes_sub_title") or "Yes")
+
+        # For binary Yes/No: yes_* → outcome[0] (Yes), no_* → outcome[1] (No).
+        yes_bid = _money(m.get("yes_bid_dollars"))
+        yes_ask = _money(m.get("yes_ask_dollars"))
+        no_bid = _money(m.get("no_bid_dollars"))
+        no_ask = _money(m.get("no_ask_dollars"))
+        last = _money(m.get("last_price_dollars"))
+        vol_24h = _money(m.get("volume_24h_fp"))
+        vol_total = _money(m.get("volume_fp"))
+        oi = _money(m.get("open_interest_fp"))
+        liq = _money(m.get("liquidity_dollars"))
+
         refs.append(
             MarketRef(
                 venue=VENUE,
@@ -128,10 +181,17 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 outcomes=[label, "No"],
                 resolved=False,
                 volume=_money(m.get("volume_24h_fp")) or _money(m.get("volume_fp")),
-                liquidity=_money(m.get("liquidity_dollars")),
+                liquidity=liq,
                 category=event_category,
                 topic=topic,
                 quoted_prices=[yes, Decimal(1) - yes],
+                best_bids=[yes_bid, no_bid],
+                best_asks=[yes_ask, no_ask],
+                last_trades=[last, None],  # last_price_dollars is for Yes side
+                outcome_volumes_24h=[vol_24h, vol_24h],  # market-level, shared
+                outcome_volumes_total=[vol_total, vol_total],
+                open_interests=[oi, oi],  # market-level OI shared across Yes/No
+                close_date=close_date,
             )
         )
     return refs

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.analysis.distribution import normalise_distribution
-from app.analysis.probability import implied_probability, probability_from_price
+from app.analysis.probability import implied_probability, probability_from_price, q6
 from app.config import Settings
 from app.models.domain import (
     EventDistribution,
@@ -25,11 +25,29 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _spread(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
+    """Pure helper: spread = ask - bid, or None when either side is absent."""
+    if bid is not None and ask is not None:
+        return q6(ask - bid)
+    return None
+
+
+def _get(arr: list[Decimal | None] | None, i: int) -> Decimal | None:
+    """Safe index into a nullable parallel array — returns None when absent."""
+    if arr is None or i >= len(arr):
+        return None
+    return arr[i]
+
+
 async def build_distribution(
     gateway: Gateway, ref: MarketRef, settings: Settings
 ) -> EventDistribution | None:
     """Live: derive each outcome's probability (CLOB book where available, else the
-    discovery quick-read) and normalise the event. Returns None if no price."""
+    discovery quick-read) and normalise the event. Returns None if no price.
+
+    Per-outcome microstructure fields (bid/ask/spread/last/volume/OI) are threaded
+    from the ref's parallel arrays onto each OutcomeProbability — pure, no I/O.
+    """
     probs: list[OutcomeProbability] = []
     for i, outcome in enumerate(ref.outcomes):
         op: OutcomeProbability | None = None
@@ -66,6 +84,21 @@ async def build_distribution(
                 thin_volume=settings.thin_volume,
                 volume=ref.volume,
             )
+
+        # Attach per-outcome microstructure from ref parallel arrays (pure).
+        bid = _get(ref.best_bids, i)
+        ask = _get(ref.best_asks, i)
+        last = _get(ref.last_trades, i)
+        op = op.model_copy(update={
+            "best_bid": q6(bid) if bid is not None else None,
+            "best_ask": q6(ask) if ask is not None else None,
+            "spread": _spread(bid, ask),
+            "last_trade_price": q6(last) if last is not None else None,
+            "volume_24h": _get(ref.outcome_volumes_24h, i),
+            "volume_total": _get(ref.outcome_volumes_total, i),
+            "open_interest": _get(ref.open_interests, i),
+        })
+
         probs.append(op)
 
     if not probs:
@@ -97,7 +130,15 @@ def observations_from_distribution(
             probability=op.probability,
             raw_price=op.raw_price,
             volume=ref.volume,
+            volume_24h=op.volume_24h,
+            volume_total=op.volume_total,
             liquidity=ref.liquidity,
+            close_date=ref.close_date,
+            best_bid=op.best_bid,
+            best_ask=op.best_ask,
+            spread=op.spread,
+            last_trade_price=op.last_trade_price,
+            open_interest=op.open_interest,
             confidence=op.confidence.level,
             priority=priority,
             tracked=tracked,

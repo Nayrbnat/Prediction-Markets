@@ -39,6 +39,16 @@ class MarketRef(BaseModel):
         default=None,
         description="Quick-read price per outcome (0..1), aligned to `outcomes`, from discovery.",
     )
+    # Per-outcome parallel arrays (aligned to outcomes[]).  NULL means the venue
+    # did not expose that value for the given outcome side — never fabricated.
+    best_bids: list[Decimal | None] | None = None
+    best_asks: list[Decimal | None] | None = None
+    last_trades: list[Decimal | None] | None = None
+    outcome_volumes_24h: list[Decimal | None] | None = None
+    outcome_volumes_total: list[Decimal | None] | None = None
+    open_interests: list[Decimal | None] | None = None
+    # Resolution date (market-level, same for all outcomes in the same market).
+    close_date: datetime | None = None
 
 
 class OrderBookTop(BaseModel):
@@ -60,6 +70,14 @@ class OutcomeProbability(BaseModel):
     raw_price: Decimal
     provenance: Provenance
     confidence: ConfidenceFlag = Field(default_factory=ConfidenceFlag)
+    # Market microstructure fields — NULL when not available for this outcome/side.
+    best_bid: Decimal | None = None
+    best_ask: Decimal | None = None
+    spread: Decimal | None = None
+    last_trade_price: Decimal | None = None
+    volume_24h: Decimal | None = None
+    volume_total: Decimal | None = None
+    open_interest: Decimal | None = None
 
 
 class EventDistribution(BaseModel):
@@ -91,8 +109,18 @@ class MarketObservation(BaseModel):
     previous_probability: Decimal | None = None
     probability_delta: Decimal | None = None
     raw_price: Decimal
+    # volume replaced by volume_24h / volume_total; old scalar kept as alias for
+    # backward-compat with code that still writes it (deprecated — prefer the split).
     volume: Decimal | None = None
+    volume_24h: Decimal | None = None
+    volume_total: Decimal | None = None
     liquidity: Decimal | None = None
+    close_date: datetime | None = None
+    best_bid: Decimal | None = None
+    best_ask: Decimal | None = None
+    spread: Decimal | None = None
+    last_trade_price: Decimal | None = None
+    open_interest: Decimal | None = None
     confidence: str = "ok"
     priority: Priority = "normal"
     tracked: bool = False

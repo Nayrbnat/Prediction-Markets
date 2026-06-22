@@ -11,6 +11,7 @@ child. Precise prices come from the CLOB client (binary events only). No analysi
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -52,10 +53,32 @@ def _dec(value: object) -> Decimal | None:
         return None
 
 
+def _parse_close_date(value: object) -> datetime | None:
+    """Parse Gamma's ISO-8601 date strings (may end with 'Z') to UTC datetime."""
+    if value is None or value == "":
+        return None
+    try:
+        s = str(value).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
 def _binary_ref(
     market: dict, *, event_id: str, event_title: str, topic: str
 ) -> MarketRef | None:
-    """One Yes/No MarketRef from a single binary market (CLOB-priced)."""
+    """One Yes/No MarketRef from a single binary market (CLOB-priced).
+
+    Polymarket only books the Yes token; bid/ask/last are available for outcome[0]
+    (Yes) only.  The complement side (outcome[1], typically "No") gets NULL for those
+    fields — never fabricated.  Volume fields are market-level and shared across both
+    outcomes.
+    """
     try:
         outcomes = [str(o) for o in _as_list(market.get("outcomes"))]
         if not outcomes:
@@ -67,6 +90,25 @@ def _binary_ref(
         market_key = str(market.get("conditionId") or market.get("id") or "")
         if not market_key:
             return None
+
+        n = len(outcomes)
+        # Yes-token bid/ask/last (index 0); No-side is NULL — only one token traded.
+        yes_bid = _dec(market.get("bestBid"))
+        yes_ask = _dec(market.get("bestAsk"))
+        yes_last = _dec(market.get("lastTradePrice"))
+        best_bids: list[Decimal | None] = [yes_bid] + [None] * (n - 1)
+        best_asks: list[Decimal | None] = [yes_ask] + [None] * (n - 1)
+        last_trades: list[Decimal | None] = [yes_last] + [None] * (n - 1)
+
+        # Volume/volume_total are market-level (both outcomes share the same market).
+        vol_24h = _dec(market.get("volume24hr"))
+        vol_total = _dec(market.get("volumeNum") or market.get("volume"))
+        outcome_volumes_24h: list[Decimal | None] = [vol_24h] * n
+        outcome_volumes_total: list[Decimal | None] = [vol_total] * n
+
+        # open_interest is not reliably exposed at market level for binary markets.
+        open_interests: list[Decimal | None] = [None] * n
+
         return MarketRef(
             venue=VENUE,
             event_id=event_id,
@@ -81,6 +123,13 @@ def _binary_ref(
             liquidity=_dec(market.get("liquidity") or market.get("liquidityNum")),
             topic=topic,
             quoted_prices=prices or None,
+            best_bids=best_bids,
+            best_asks=best_asks,
+            last_trades=last_trades,
+            outcome_volumes_24h=outcome_volumes_24h,
+            outcome_volumes_total=outcome_volumes_total,
+            open_interests=open_interests,
+            close_date=_parse_close_date(market.get("endDate") or market.get("endDateIso")),
         )
     except (KeyError, TypeError, AttributeError) as exc:
         raise SchemaDriftError(f"gamma market shape unexpected: {exc}") from exc
@@ -91,9 +140,20 @@ def _multi_outcome_ref(
 ) -> MarketRef | None:
     """One MarketRef for a mutually-exclusive event: each active child contributes
     one outcome (label = groupItemTitle, probability = its Yes price). token_ids is
-    left empty so pricing uses these quick-read prices rather than N CLOB calls."""
+    left empty so pricing uses these quick-read prices rather than N CLOB calls.
+
+    Per-candidate bid/ask/last come from each child market's bestBid/bestAsk/
+    lastTradePrice fields.  open_interest comes from event-level ``openInterest``
+    (same value broadcast to all outcomes — the canonical multi-outcome source).
+    """
     outcomes: list[str] = []
     prices: list[Decimal] = []
+    best_bids: list[Decimal | None] = []
+    best_asks: list[Decimal | None] = []
+    last_trades: list[Decimal | None] = []
+    vols_24h: list[Decimal | None] = []
+    vols_total: list[Decimal | None] = []
+
     for m in active:
         op = _as_list(m.get("outcomePrices"))
         yes_price = _dec(op[0]) if op else None
@@ -102,8 +162,19 @@ def _multi_outcome_ref(
         label = m.get("groupItemTitle") or m.get("question") or m.get("slug")
         outcomes.append(str(label))
         prices.append(yes_price)
+        best_bids.append(_dec(m.get("bestBid")))
+        best_asks.append(_dec(m.get("bestAsk")))
+        last_trades.append(_dec(m.get("lastTradePrice")))
+        vols_24h.append(_dec(m.get("volume24hr")))
+        vols_total.append(_dec(m.get("volumeNum") or m.get("volume")))
+
     if not outcomes:
         return None
+
+    # open_interest: use event-level value (same for all outcomes in a negRisk event).
+    event_oi = _dec(event.get("openInterest"))
+    open_interests: list[Decimal | None] = [event_oi] * len(outcomes)
+
     event_id = str(event.get("id", ""))
     return MarketRef(
         venue=VENUE,
@@ -118,6 +189,13 @@ def _multi_outcome_ref(
         liquidity=_dec(event.get("liquidity")),
         topic=topic,
         quoted_prices=prices,
+        best_bids=best_bids,
+        best_asks=best_asks,
+        last_trades=last_trades,
+        outcome_volumes_24h=vols_24h,
+        outcome_volumes_total=vols_total,
+        open_interests=open_interests,
+        close_date=_parse_close_date(event.get("endDate")),
     )
 
 

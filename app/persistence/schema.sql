@@ -30,19 +30,26 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
 -- market_snapshots — append-only fact table (one row per date/venue/key/outcome)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS market_snapshots (
-    snapshot_date DATE        NOT NULL,
-    venue         TEXT        NOT NULL,
-    market_key    TEXT        NOT NULL,
-    outcome       TEXT        NOT NULL,
-    event_title   TEXT        NOT NULL,
-    probability   NUMERIC(9,6)  NOT NULL,
-    raw_price     NUMERIC(12,6) NOT NULL,
-    volume        NUMERIC(20,4),
-    liquidity     NUMERIC(20,4),
-    confidence    TEXT        NOT NULL DEFAULT 'ok',
-    observed_at   TIMESTAMPTZ NOT NULL,
-    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    run_id        BIGINT,
+    snapshot_date    DATE          NOT NULL,
+    venue            TEXT          NOT NULL,
+    market_key       TEXT          NOT NULL,
+    outcome          TEXT          NOT NULL,
+    event_title      TEXT          NOT NULL,
+    probability      NUMERIC(9,6)  NOT NULL,
+    raw_price        NUMERIC(12,6) NOT NULL,
+    volume_24h       NUMERIC(20,4),
+    volume_total     NUMERIC(20,4),
+    liquidity        NUMERIC(20,4),
+    close_date       TIMESTAMPTZ,
+    best_bid         NUMERIC(12,6),
+    best_ask         NUMERIC(12,6),
+    spread           NUMERIC(12,6),
+    last_trade_price NUMERIC(12,6),
+    open_interest    NUMERIC(20,4),
+    confidence       TEXT          NOT NULL DEFAULT 'ok',
+    observed_at      TIMESTAMPTZ   NOT NULL,
+    ingested_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    run_id           BIGINT,
     PRIMARY KEY (snapshot_date, venue, market_key, outcome)
 );
 
@@ -76,8 +83,9 @@ CREATE INDEX IF NOT EXISTS idx_topics_topic ON market_topics (topic);
 CREATE MATERIALIZED VIEW IF NOT EXISTS market_latest AS
 SELECT DISTINCT ON (venue, market_key, outcome)
     venue, market_key, outcome, event_title,
-    probability, raw_price, volume, liquidity, confidence,
-    snapshot_date, observed_at
+    probability, raw_price, volume_24h, volume_total, liquidity,
+    close_date, best_bid, best_ask, spread, last_trade_price, open_interest,
+    confidence, snapshot_date, observed_at
 FROM market_snapshots
 ORDER BY venue, market_key, outcome, snapshot_date DESC;
 

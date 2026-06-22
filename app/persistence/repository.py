@@ -148,22 +148,33 @@ WHERE run_id = $1
 _UPSERT_SNAPSHOTS = """
 INSERT INTO market_snapshots
     (snapshot_date, venue, market_key, outcome, event_title,
-     probability, raw_price, volume, liquidity, confidence, observed_at, run_id)
+     probability, raw_price, volume_24h, volume_total, liquidity,
+     close_date, best_bid, best_ask, spread, last_trade_price, open_interest,
+     confidence, observed_at, run_id)
 SELECT * FROM unnest(
     $1::date[], $2::text[], $3::text[], $4::text[], $5::text[],
-    $6::numeric[], $7::numeric[], $8::numeric[], $9::numeric[],
-    $10::text[], $11::timestamptz[], $12::bigint[]
+    $6::numeric[], $7::numeric[], $8::numeric[], $9::numeric[], $10::numeric[],
+    $11::timestamptz[], $12::numeric[], $13::numeric[], $14::numeric[],
+    $15::numeric[], $16::numeric[],
+    $17::text[], $18::timestamptz[], $19::bigint[]
 )
 ON CONFLICT (snapshot_date, venue, market_key, outcome) DO UPDATE SET
-    event_title = EXCLUDED.event_title,
-    probability = EXCLUDED.probability,
-    raw_price   = EXCLUDED.raw_price,
-    volume      = EXCLUDED.volume,
-    liquidity   = EXCLUDED.liquidity,
-    confidence  = EXCLUDED.confidence,
-    observed_at = EXCLUDED.observed_at,
-    ingested_at = now(),
-    run_id      = EXCLUDED.run_id
+    event_title      = EXCLUDED.event_title,
+    probability      = EXCLUDED.probability,
+    raw_price        = EXCLUDED.raw_price,
+    volume_24h       = EXCLUDED.volume_24h,
+    volume_total     = EXCLUDED.volume_total,
+    liquidity        = EXCLUDED.liquidity,
+    close_date       = EXCLUDED.close_date,
+    best_bid         = EXCLUDED.best_bid,
+    best_ask         = EXCLUDED.best_ask,
+    spread           = EXCLUDED.spread,
+    last_trade_price = EXCLUDED.last_trade_price,
+    open_interest    = EXCLUDED.open_interest,
+    confidence       = EXCLUDED.confidence,
+    observed_at      = EXCLUDED.observed_at,
+    ingested_at      = now(),
+    run_id           = EXCLUDED.run_id
 """
 
 # Bulk topic-mapping upsert via unnest.
@@ -191,8 +202,11 @@ DELETE FROM market_snapshots WHERE snapshot_date < $1
 _READ_TOPIC_LATEST = """
 SELECT
     ml.venue, ml.market_key, ml.outcome, ml.event_title,
-    ml.probability, ml.raw_price, ml.volume, ml.liquidity, ml.confidence,
-    ml.observed_at,
+    ml.probability, ml.raw_price,
+    ml.volume_24h, ml.volume_total, ml.liquidity,
+    ml.close_date, ml.best_bid, ml.best_ask, ml.spread,
+    ml.last_trade_price, ml.open_interest,
+    ml.confidence, ml.observed_at,
     mt.topic, mt.category, mt.priority, mt.tracked
 FROM market_latest ml
 JOIN market_topics mt ON ml.venue = mt.venue AND ml.market_key = mt.market_key
@@ -204,8 +218,11 @@ ORDER BY ml.event_title, ml.outcome
 _READ_TOPIC_AS_OF = """
 SELECT DISTINCT ON (s.venue, s.market_key, s.outcome)
     s.venue, s.market_key, s.outcome, s.event_title,
-    s.probability, s.raw_price, s.volume, s.liquidity, s.confidence,
-    s.observed_at,
+    s.probability, s.raw_price,
+    s.volume_24h, s.volume_total, s.liquidity,
+    s.close_date, s.best_bid, s.best_ask, s.spread,
+    s.last_trade_price, s.open_interest,
+    s.confidence, s.observed_at,
     mt.topic, mt.category, mt.priority, mt.tracked
 FROM market_snapshots s
 JOIN market_topics mt ON s.venue = mt.venue AND s.market_key = mt.market_key
@@ -220,8 +237,11 @@ ORDER BY s.venue, s.market_key, s.outcome, s.snapshot_date DESC
 _READ_MARKET_LATEST = """
 SELECT
     ml.venue, ml.market_key, ml.outcome, ml.event_title,
-    ml.probability, ml.raw_price, ml.volume, ml.liquidity, ml.confidence,
-    ml.observed_at
+    ml.probability, ml.raw_price,
+    ml.volume_24h, ml.volume_total, ml.liquidity,
+    ml.close_date, ml.best_bid, ml.best_ask, ml.spread,
+    ml.last_trade_price, ml.open_interest,
+    ml.confidence, ml.observed_at
 FROM market_latest ml
 WHERE ml.venue = $1 AND ml.market_key = $2
 ORDER BY ml.outcome
@@ -230,8 +250,11 @@ ORDER BY ml.outcome
 _READ_MARKET_AS_OF = """
 SELECT DISTINCT ON (s.venue, s.market_key, s.outcome)
     s.venue, s.market_key, s.outcome, s.event_title,
-    s.probability, s.raw_price, s.volume, s.liquidity, s.confidence,
-    s.observed_at,
+    s.probability, s.raw_price,
+    s.volume_24h, s.volume_total, s.liquidity,
+    s.close_date, s.best_bid, s.best_ask, s.spread,
+    s.last_trade_price, s.open_interest,
+    s.confidence, s.observed_at,
     mt.topic, mt.category, mt.priority, mt.tracked
 FROM market_snapshots s
 LEFT JOIN market_topics mt ON s.venue = mt.venue AND s.market_key = mt.market_key
@@ -243,8 +266,11 @@ ORDER BY s.venue, s.market_key, s.outcome, s.snapshot_date DESC
 _SEARCH = """
 SELECT DISTINCT ON (ml.venue, ml.market_key, ml.outcome)
     ml.venue, ml.market_key, ml.outcome, ml.event_title,
-    ml.probability, ml.raw_price, ml.volume, ml.liquidity, ml.confidence,
-    ml.observed_at,
+    ml.probability, ml.raw_price,
+    ml.volume_24h, ml.volume_total, ml.liquidity,
+    ml.close_date, ml.best_bid, ml.best_ask, ml.spread,
+    ml.last_trade_price, ml.open_interest,
+    ml.confidence, ml.observed_at,
     mt.topic, mt.category, mt.priority, mt.tracked
 FROM market_latest ml
 LEFT JOIN market_topics mt ON ml.venue = mt.venue AND ml.market_key = mt.market_key
@@ -286,8 +312,15 @@ def _row_to_observation(row: asyncpg.Record) -> MarketObservation:
         category=d.get("category"),
         probability=d["probability"],
         raw_price=d["raw_price"],
-        volume=d.get("volume"),
+        volume_24h=d.get("volume_24h"),
+        volume_total=d.get("volume_total"),
         liquidity=d.get("liquidity"),
+        close_date=d.get("close_date"),
+        best_bid=d.get("best_bid"),
+        best_ask=d.get("best_ask"),
+        spread=d.get("spread"),
+        last_trade_price=d.get("last_trade_price"),
+        open_interest=d.get("open_interest"),
         confidence=d.get("confidence", "ok"),
         priority=d.get("priority", "normal"),
         tracked=d.get("tracked", False),
@@ -331,26 +364,34 @@ class PostgresMarketRepository(MarketRepository):
         rows = _dedupe_observations(observations)
         now = datetime.now(timezone.utc)
 
-        dates       = [snapshot_date for _ in rows]
-        venues      = [o.venue       for o in rows]
-        market_keys = [o.market_key  for o in rows]
-        outcomes    = [o.outcome     for o in rows]
-        titles      = [o.event_title for o in rows]
-        probs       = [o.probability for o in rows]
-        raw_prices  = [o.raw_price   for o in rows]
-        volumes     = [o.volume      for o in rows]
-        liquidities = [o.liquidity   for o in rows]
-        confidences = [o.confidence  for o in rows]
-        obs_ats     = [now           for _ in rows]
-        run_ids     = [run_id        for _ in rows]
+        dates            = [snapshot_date   for _ in rows]
+        venues           = [o.venue         for o in rows]
+        market_keys      = [o.market_key    for o in rows]
+        outcomes         = [o.outcome       for o in rows]
+        titles           = [o.event_title   for o in rows]
+        probs            = [o.probability   for o in rows]
+        raw_prices       = [o.raw_price     for o in rows]
+        vols_24h         = [o.volume_24h    for o in rows]
+        vols_total       = [o.volume_total  for o in rows]
+        liquidities      = [o.liquidity     for o in rows]
+        close_dates      = [o.close_date    for o in rows]
+        best_bids        = [o.best_bid      for o in rows]
+        best_asks        = [o.best_ask      for o in rows]
+        spreads          = [o.spread        for o in rows]
+        last_trades      = [o.last_trade_price for o in rows]
+        open_interests   = [o.open_interest for o in rows]
+        confidences      = [o.confidence    for o in rows]
+        obs_ats          = [now             for _ in rows]
+        run_ids          = [run_id          for _ in rows]
 
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     _UPSERT_SNAPSHOTS,
                     dates, venues, market_keys, outcomes, titles,
-                    probs, raw_prices, volumes, liquidities, confidences,
-                    obs_ats, run_ids,
+                    probs, raw_prices, vols_24h, vols_total, liquidities,
+                    close_dates, best_bids, best_asks, spreads, last_trades, open_interests,
+                    confidences, obs_ats, run_ids,
                 )
         except Exception as exc:  # noqa: BLE001
             raise PersistenceError(f"write_snapshots failed: {exc}") from exc
