@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     high_priority_topics: str = ""
     category_map: str = "{}"
     kalshi_series_map: str = "{}"
+    kalshi_category_map: str = "{}"
     per_topic_limit: int = 50
 
     # ---- Behaviour thresholds ------------------------------------------
@@ -73,6 +74,10 @@ class Settings(BaseSettings):
     @property
     def kalshi_series(self) -> dict[str, object]:
         return json.loads(self.kalshi_series_map or "{}")
+
+    @property
+    def kalshi_categories(self) -> dict[str, str]:
+        return json.loads(self.kalshi_category_map or "{}")
 
 
 @lru_cache

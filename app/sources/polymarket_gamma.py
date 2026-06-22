@@ -1,7 +1,11 @@
 """Polymarket Gamma — discovery + quick-read prices (public, no auth).
 
-Topic -> matched events/markets via /public-search. Returns typed MarketRef with
-quoted prices; precise prices come from the CLOB client. No analysis here.
+Topic -> matched events via /public-search. Returns typed MarketRef grouped at the
+EVENT level: a mutually-exclusive multi-outcome event (``negRisk``) becomes one
+MarketRef whose outcomes are the candidate markets (label = ``groupItemTitle``,
+price = each candidate's Yes price); a single binary market becomes one Yes/No
+MarketRef; a non-exclusive multi-market event becomes one binary MarketRef per
+child. Precise prices come from the CLOB client (binary events only). No analysis.
 """
 
 from __future__ import annotations
@@ -48,9 +52,10 @@ def _dec(value: object) -> Decimal | None:
         return None
 
 
-def _market_to_ref(
+def _binary_ref(
     market: dict, *, event_id: str, event_title: str, topic: str
 ) -> MarketRef | None:
+    """One Yes/No MarketRef from a single binary market (CLOB-priced)."""
     try:
         outcomes = [str(o) for o in _as_list(market.get("outcomes"))]
         if not outcomes:
@@ -81,8 +86,63 @@ def _market_to_ref(
         raise SchemaDriftError(f"gamma market shape unexpected: {exc}") from exc
 
 
+def _multi_outcome_ref(
+    event: dict, active: list[dict], *, topic: str
+) -> MarketRef | None:
+    """One MarketRef for a mutually-exclusive event: each active child contributes
+    one outcome (label = groupItemTitle, probability = its Yes price). token_ids is
+    left empty so pricing uses these quick-read prices rather than N CLOB calls."""
+    outcomes: list[str] = []
+    prices: list[Decimal] = []
+    for m in active:
+        op = _as_list(m.get("outcomePrices"))
+        yes_price = _dec(op[0]) if op else None
+        if yes_price is None:
+            continue
+        label = m.get("groupItemTitle") or m.get("question") or m.get("slug")
+        outcomes.append(str(label))
+        prices.append(yes_price)
+    if not outcomes:
+        return None
+    event_id = str(event.get("id", ""))
+    return MarketRef(
+        venue=VENUE,
+        event_id=event_id,
+        market_key=event_id,
+        event_title=str(event.get("title", topic)),
+        outcomes=outcomes,
+        token_ids=[],  # grouped: use quoted prices, skip per-candidate CLOB
+        resolved=False,
+        enable_order_book=False,
+        volume=_dec(event.get("volume")),
+        liquidity=_dec(event.get("liquidity")),
+        topic=topic,
+        quoted_prices=prices,
+    )
+
+
+def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
+    markets = [m for m in event.get("markets", []) or [] if isinstance(m, dict)]
+    active = [m for m in markets if not bool(m.get("closed", False))]
+    if not active:
+        return []
+    event_id = str(event.get("id", ""))
+    event_title = str(event.get("title", topic))
+
+    if bool(event.get("negRisk", False)) and len(active) > 1:
+        ref = _multi_outcome_ref(event, active, topic=topic)
+        return [ref] if ref is not None else []
+
+    refs: list[MarketRef] = []
+    for m in active:
+        ref = _binary_ref(m, event_id=event_id, event_title=event_title, topic=topic)
+        if ref is not None:
+            refs.append(ref)
+    return refs
+
+
 async def discover(client: httpx.AsyncClient, topic: str, *, limit: int = 50) -> list[MarketRef]:
-    """Discover active Polymarket markets matching ``topic``."""
+    """Discover active Polymarket markets matching ``topic``, grouped by event."""
     payload = await fetch_json(
         client,
         "/public-search",
@@ -95,15 +155,7 @@ async def discover(client: httpx.AsyncClient, topic: str, *, limit: int = 50) ->
 
     refs: list[MarketRef] = []
     for event in payload["events"]:
-        if not isinstance(event, dict):
-            continue
-        event_id = str(event.get("id", ""))
-        event_title = str(event.get("title", topic))
-        for market in event.get("markets", []) or []:
-            if not isinstance(market, dict):
-                continue
-            ref = _market_to_ref(market, event_id=event_id, event_title=event_title, topic=topic)
-            if ref is not None and not ref.resolved:
-                refs.append(ref)
+        if isinstance(event, dict):
+            refs.extend(_event_to_refs(event, topic=topic))
     logger.info("gamma.discover", extra={"topic": topic, "markets": len(refs)})
     return refs

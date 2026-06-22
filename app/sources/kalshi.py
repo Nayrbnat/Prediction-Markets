@@ -1,10 +1,15 @@
 """Kalshi — discovery + prices via the official Trade API (public reads, no auth).
 
-Verified live 2026-06-16: the API returns DOLLAR-denominated string prices
-(``yes_bid_dollars`` etc., already in 0..1 probability units — NOT cents) and
-fixed-point string sizes/volumes (``volume_24h_fp``, ``volume_fp``). The legacy
-cent fields (``yes_bid``/``yes_ask``/``last_price``) have been removed.
-NO wallet logic — Kalshi has no chain.
+Verified live 2026-06-22 against official docs:
+- Prices are DOLLAR-denominated strings already in 0..1 (``yes_bid_dollars`` etc.,
+  NOT cents). Volumes are fixed-point strings (``volume_24h_fp``/``volume_fp``).
+- The ``title`` field is deprecated; outcome labels live in ``yes_sub_title``.
+- There is NO keyword search endpoint. Discovery is navigational:
+  series (``/series?category=``) -> events (``/events?series_ticker=&with_nested_markets``)
+  -> markets. We resolve a topic to series two ways: an explicit topic->series map,
+  else a category scan keyword-matching series titles.
+- Events expose ``mutually_exclusive``; an exclusive event's nested markets are the
+  outcomes of one distribution. NO wallet logic — Kalshi has no chain.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ logger = get_logger(__name__)
 
 VENUE = "kalshi"
 _limiter = AsyncRateLimiter(rate_per_sec=8.0)
+_TERMINAL_STATUS = {"closed", "settled", "determined", "finalized", "inactive"}
+_MAX_AUTO_SERIES = 5
 
 
 def _money(value: object) -> Decimal | None:
@@ -41,32 +48,133 @@ def _mid(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
     return bid if bid is not None else ask
 
 
-def _market_to_ref(market: dict, *, topic: str) -> MarketRef | None:
-    ticker = market.get("ticker")
-    if not ticker:
-        raise SchemaDriftError("kalshi market missing 'ticker'")
+def _yes_price(market: dict) -> Decimal | None:
     yes = _mid(_money(market.get("yes_bid_dollars")), _money(market.get("yes_ask_dollars")))
-    no = _mid(_money(market.get("no_bid_dollars")), _money(market.get("no_ask_dollars")))
     if yes is None:
         yes = _money(market.get("last_price_dollars"))
-    if yes is None:
-        return None  # no usable price; drop rather than fabricate
-    if no is None:
-        no = Decimal(1) - yes
-    volume = _money(market.get("volume_24h_fp"))
-    if volume is None:
-        volume = _money(market.get("volume_fp"))
-    return MarketRef(
-        venue=VENUE,
-        event_id=str(market.get("event_ticker", ticker)),
-        market_key=str(ticker),
-        event_title=str(market.get("title", topic)),
-        outcomes=["Yes", "No"],
-        resolved=str(market.get("status", "")) in {"closed", "settled", "determined"},
-        volume=volume,
-        topic=topic,
-        quoted_prices=[yes, no],
+    return yes
+
+
+def _is_active(market: dict) -> bool:
+    return str(market.get("status", "")) not in _TERMINAL_STATUS
+
+
+def _event_volume(markets: list[dict]) -> Decimal | None:
+    vols = [
+        v
+        for v in (_money(m.get("volume_24h_fp")) or _money(m.get("volume_fp")) for m in markets)
+        if v is not None
+    ]
+    return sum(vols, Decimal(0)) if vols else None
+
+
+def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
+    markets = [m for m in event.get("markets", []) or [] if isinstance(m, dict)]
+    active = [m for m in markets if _is_active(m)]
+    if not active:
+        return []
+    event_ticker = str(event.get("event_ticker", ""))
+    event_title = str(event.get("title") or event.get("sub_title") or topic)
+
+    if bool(event.get("mutually_exclusive", False)) and len(active) > 1:
+        outcomes: list[str] = []
+        prices: list[Decimal] = []
+        for m in active:
+            yes = _yes_price(m)
+            if yes is None:
+                continue
+            outcomes.append(str(m.get("yes_sub_title") or m.get("ticker")))
+            prices.append(yes)
+        if not outcomes:
+            return []
+        return [
+            MarketRef(
+                venue=VENUE,
+                event_id=event_ticker,
+                market_key=event_ticker,
+                event_title=event_title,
+                outcomes=outcomes,
+                resolved=False,
+                volume=_event_volume(active),
+                topic=topic,
+                quoted_prices=prices,
+            )
+        ]
+
+    # Non-exclusive (or single) markets: one binary Yes/No ref each.
+    refs: list[MarketRef] = []
+    for m in active:
+        ticker = m.get("ticker")
+        if not ticker:
+            raise SchemaDriftError("kalshi market missing 'ticker'")
+        yes = _yes_price(m)
+        if yes is None:
+            continue
+        label = str(m.get("yes_sub_title") or "Yes")
+        refs.append(
+            MarketRef(
+                venue=VENUE,
+                event_id=event_ticker or str(ticker),
+                market_key=str(ticker),
+                event_title=event_title,
+                outcomes=[label, "No"],
+                resolved=False,
+                volume=_money(m.get("volume_24h_fp")) or _money(m.get("volume_fp")),
+                topic=topic,
+                quoted_prices=[yes, Decimal(1) - yes],
+            )
+        )
+    return refs
+
+
+async def _series_for_topic(
+    client: httpx.AsyncClient, topic: str, category: str
+) -> list[str]:
+    """Keyword-match the topic against series titles within a category."""
+    payload = await fetch_json(
+        client, "/series", venue=VENUE, limiter=_limiter, params={"category": category}
     )
+    if not isinstance(payload, dict) or "series" not in payload:
+        raise SchemaDriftError("kalshi /series missing 'series'")
+    words = [w for w in topic.lower().split() if len(w) > 2]
+    matched: list[str] = []
+    for s in payload["series"]:
+        if not isinstance(s, dict):
+            continue
+        title = str(s.get("title", "")).lower()
+        if any(w in title for w in words):
+            ticker = s.get("ticker")
+            if ticker:
+                matched.append(str(ticker))
+    logger.info(
+        "kalshi.series_match",
+        extra={"topic": topic, "category": category, "matched": len(matched)},
+    )
+    return matched[:_MAX_AUTO_SERIES]
+
+
+async def _events_for_series(
+    client: httpx.AsyncClient, series_ticker: str, *, topic: str, limit: int
+) -> list[MarketRef]:
+    payload = await fetch_json(
+        client,
+        "/events",
+        venue=VENUE,
+        limiter=_limiter,
+        params={
+            "series_ticker": series_ticker,
+            "with_nested_markets": "true",
+            "status": "open",
+            "limit": str(min(limit, 200)),
+        },
+    )
+    if not isinstance(payload, dict) or "events" not in payload:
+        raise SchemaDriftError("kalshi /events missing 'events'")
+    refs: list[MarketRef] = []
+    for event in payload["events"]:
+        if isinstance(event, dict):
+            refs.extend(_event_to_refs(event, topic=topic))
+    return refs
 
 
 async def discover(
@@ -74,39 +182,30 @@ async def discover(
     topic: str,
     *,
     limit: int = 50,
-    series_ticker: str | None = None,
+    series_tickers: list[str] | None = None,
+    category: str | None = None,
 ) -> list[MarketRef]:
-    """Discover open Kalshi markets for ``topic``. Prefer ``series_ticker`` when the
-    topic maps to a known series; otherwise scan open markets and title-filter."""
-    params = {"limit": str(min(limit, 1000)), "status": "open"}
-    if series_ticker:
-        params["series_ticker"] = series_ticker
+    """Discover open Kalshi markets for ``topic`` via series -> events -> markets.
 
-    payload = await fetch_json(client, "/markets", venue=VENUE, limiter=_limiter, params=params)
-    if not isinstance(payload, dict) or "markets" not in payload:
-        raise SchemaDriftError("kalshi /markets missing 'markets'")
+    Resolution: explicit ``series_tickers`` first; else keyword-match series titles
+    within ``category``; else warn and return nothing (clean degradation).
+    """
+    series = list(series_tickers or [])
+    if not series and category:
+        series = await _series_for_topic(client, topic, category)
 
-    refs: list[MarketRef] = []
-    needle = topic.lower()
-    for market in payload["markets"]:
-        if not isinstance(market, dict):
-            continue
-        if series_ticker is None and needle not in str(market.get("title", "")).lower():
-            continue
-        ref = _market_to_ref(market, topic=topic)
-        if ref is not None and not ref.resolved:
-            refs.append(ref)
-
-    if series_ticker is None and not refs:
-        # Verified live: the unfiltered open-markets scan rarely matches a free-text
-        # topic (top markets are multi-leg combos). Map the topic to a series ticker
-        # via KALSHI_SERIES_MAP for reliable Kalshi coverage.
+    if not series:
         logger.warning(
             "kalshi.no_series_no_match",
-            extra={"topic": topic, "hint": "set KALSHI_SERIES_MAP for this topic"},
+            extra={"topic": topic, "hint": "set KALSHI_SERIES_MAP or KALSHI_CATEGORY_MAP"},
         )
+        return []
+
+    refs: list[MarketRef] = []
+    for s in series:
+        refs.extend(await _events_for_series(client, s, topic=topic, limit=limit))
     logger.info(
         "kalshi.discover",
-        extra={"topic": topic, "markets": len(refs), "series_ticker": series_ticker},
+        extra={"topic": topic, "markets": len(refs), "series": series},
     )
     return refs

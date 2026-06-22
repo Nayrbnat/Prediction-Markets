@@ -49,10 +49,22 @@ class HttpGateway:
             tasks.append(polymarket_gamma.discover(self._gamma, topic, limit=limit))
             labels.append("polymarket")
         if "kalshi" in want:
-            series = self._settings.kalshi_series.get(topic)
-            series_ticker = str(series) if isinstance(series, str) else None
+            mapped = self._settings.kalshi_series.get(topic)
+            if isinstance(mapped, str):
+                series_tickers: list[str] | None = [mapped]
+            elif isinstance(mapped, list):
+                series_tickers = [str(s) for s in mapped]
+            else:
+                series_tickers = None
+            category = self._settings.kalshi_categories.get(topic)
             tasks.append(
-                kalshi.discover(self._kalshi, topic, limit=limit, series_ticker=series_ticker)
+                kalshi.discover(
+                    self._kalshi,
+                    topic,
+                    limit=limit,
+                    series_tickers=series_tickers,
+                    category=category,
+                )
             )
             labels.append("kalshi")
 

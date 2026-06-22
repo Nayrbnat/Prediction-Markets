@@ -155,9 +155,15 @@ This is where the "extract from blockchain" requirement lives. It is Polymarket-
 | `last_price_dollars`, `previous_price_dollars` | last / previous trade price (dollar string) |
 | `volume_fp`, `volume_24h_fp`, `open_interest_fp`, `*_size_fp` | fixed-point **strings** (e.g. `"5000"`) |
 | `liquidity_dollars`, `notional_value_dollars` | dollar strings |
-| `ticker`, `event_ticker`, `title`, `status` | identity/classification (`status` returns `active` for open markets) |
+| `ticker`, `event_ticker`, `yes_sub_title`, `status` | identity/classification. **`title` is deprecated → use `yes_sub_title`** as the outcome label (e.g. "Fed maintains rate"). `status` returns `active` for open markets. |
 
 So the yes probability is the mid `(Decimal(yes_bid_dollars) + Decimal(yes_ask_dollars)) / 2` — **no division by 100**. Parse every price string with `Decimal`. Response is `{"cursor": ..., "markets": [...]}`.
+
+**Discovery (verified live 2026-06-22): Kalshi has NO keyword/search endpoint.** A free-text topic cannot be searched directly; the unfiltered `/markets` scan is dominated by multi-leg combos (`KXMVESPORTSMULTIGAMEEXTENDED…`) with zero prices. Discovery is **navigational**, and the `sources/kalshi.py` client resolves a topic two ways:
+1. **Explicit** `KALSHI_SERIES_MAP[topic]` → series ticker(s).
+2. **Auto** `KALSHI_CATEGORY_MAP[topic]` → category → `GET /series?category=<C>` (e.g. 588 series in *Economics*; 13 categories) → keyword-match the topic words against series `title` → top-N series.
+
+Then for each series: `GET /events?series_ticker=<S>&with_nested_markets=true&status=open` returns events, each with a **`mutually_exclusive`** flag and nested `markets`. An exclusive event's nested markets are the **outcomes of one distribution** (label = `yes_sub_title`, probability = the yes mid); a non-exclusive event yields one binary Yes/No market each. Use `mve_filter=exclude` on `/markets` to drop multivariate combos.
 
 ```python
 async def kalshi_markets(series_ticker: str) -> list[dict]:

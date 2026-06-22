@@ -40,6 +40,27 @@ async def test_live_path_builds_distribution() -> None:
     assert res.distributions[0].outcomes[0].probability == Decimal("0.62")  # 0.62/1.00
 
 
+def _multi_ref() -> MarketRef:
+    return MarketRef(
+        venue="polymarket", event_id="EVT", market_key="EVT", event_title="World Cup Winner",
+        outcomes=["Spain", "France", "Brazil"],
+        quoted_prices=[Decimal("0.40"), Decimal("0.35"), Decimal("0.25")],
+        volume=Decimal("1000000"),
+    )
+
+
+async def test_multi_outcome_event_normalises_to_one() -> None:
+    gw = FakeGateway(refs_by_topic={"world cup": [_multi_ref()]})
+    res = await analyze(AnalyzeRequest(topic="world cup"), repo=InMemoryMarketRepository(),
+                        gateway=gw, settings=_settings())
+    assert len(res.distributions) == 1
+    dist = res.distributions[0]
+    assert [o.outcome for o in dist.outcomes] == ["Spain", "France", "Brazil"]
+    total = sum(o.probability for o in dist.outcomes)
+    assert total == Decimal(1)  # normalised across the 3 candidates (0.40+0.35+0.25=1.00)
+    assert dist.outcomes[0].probability == Decimal("0.40")  # already summed to 1, factor 1
+
+
 async def test_degrades_to_polymarket_only_with_note() -> None:
     gw = FakeGateway(refs_by_topic={"fed": [_poly_ref()]})  # no kalshi ref
     res = await analyze(AnalyzeRequest(topic="fed"), repo=InMemoryMarketRepository(),
