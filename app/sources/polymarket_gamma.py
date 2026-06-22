@@ -122,6 +122,10 @@ def _multi_outcome_ref(
 
 
 def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
+    # Category is left None here: Polymarket `tags` is a free-form folksonomy
+    # (subjects, market-types, and internal flags mixed together), not a clean
+    # taxonomy, so it is not a reliable category source. The ingestion service
+    # applies the curated CATEGORY_MAP instead (see ingestion_service).
     markets = [m for m in event.get("markets", []) or [] if isinstance(m, dict)]
     active = [m for m in markets if not bool(m.get("closed", False))]
     if not active:

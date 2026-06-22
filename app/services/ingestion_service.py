@@ -28,7 +28,7 @@ async def _ingest_topic(
     """Discover markets for a topic and build observation rows — no DB access."""
     tracked = topic in settings.high_priority
     priority = "high" if tracked else "normal"
-    category = settings.categories.get(topic)
+    map_category = settings.categories.get(topic)
 
     refs = await gateway.discover(topic, venues=None, limit=settings.per_topic_limit)
     observations: list[MarketObservation] = []
@@ -36,6 +36,9 @@ async def _ingest_topic(
         dist = await pricing.build_distribution(gateway, ref, settings)
         if dist is None:
             continue
+        # Curated CATEGORY_MAP is the controlled vocabulary and wins; the venue's
+        # own category (clean only for Kalshi's event.category) is the fallback.
+        category = map_category or ref.category
         rows = pricing.observations_from_distribution(
             dist, ref, priority=priority, tracked=tracked, category=category
         )

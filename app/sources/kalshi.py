@@ -68,6 +68,11 @@ def _event_volume(markets: list[dict]) -> Decimal | None:
     return sum(vols, Decimal(0)) if vols else None
 
 
+def _event_liquidity(markets: list[dict]) -> Decimal | None:
+    vals = [v for v in (_money(m.get("liquidity_dollars")) for m in markets) if v is not None]
+    return sum(vals, Decimal(0)) if vals else None
+
+
 def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
     markets = [m for m in event.get("markets", []) or [] if isinstance(m, dict)]
     active = [m for m in markets if _is_active(m)]
@@ -75,6 +80,7 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
         return []
     event_ticker = str(event.get("event_ticker", ""))
     event_title = str(event.get("title") or event.get("sub_title") or topic)
+    event_category: str | None = event.get("category") or None
 
     if bool(event.get("mutually_exclusive", False)) and len(active) > 1:
         outcomes: list[str] = []
@@ -96,6 +102,8 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 outcomes=outcomes,
                 resolved=False,
                 volume=_event_volume(active),
+                liquidity=_event_liquidity(active),
+                category=event_category,
                 topic=topic,
                 quoted_prices=prices,
             )
@@ -120,6 +128,8 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 outcomes=[label, "No"],
                 resolved=False,
                 volume=_money(m.get("volume_24h_fp")) or _money(m.get("volume_fp")),
+                liquidity=_money(m.get("liquidity_dollars")),
+                category=event_category,
                 topic=topic,
                 quoted_prices=[yes, Decimal(1) - yes],
             )

@@ -30,12 +30,21 @@ async def pool():
     await p.close()
 
 
+_TRUNCATE = (
+    "TRUNCATE market_snapshots, market_topics, ingestion_runs RESTART IDENTITY CASCADE"
+)
+
+
 @pytest.fixture()
 async def fresh_schema(pool):
+    """Apply schema DDL then truncate before AND after, leaving DB pristine."""
     sql = (files("app.persistence") / "schema.sql").read_text(encoding="utf-8")
     async with pool.acquire() as conn:
         await conn.execute(sql)
+        await conn.execute(_TRUNCATE)
     yield pool
+    async with pool.acquire() as conn:
+        await conn.execute(_TRUNCATE)
 
 
 async def test_snapshot_roundtrip(fresh_schema) -> None:

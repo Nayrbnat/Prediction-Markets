@@ -1,10 +1,17 @@
 -- Schema for the prediction-market store. Applied by `python -m app.persistence.migrate`.
 -- Never run as DDL on a request/ingestion hot path.
--- Pre-launch: clean-slate replacement of v1 tables (no data migration needed).
+--
+-- DESTRUCTIVE CLEAN-RECREATE: drops ALL tables (incl. the current Tier-2 ones)
+-- and recreates them from scratch, so tightened column types / schema changes
+-- always take effect on re-migrate (CREATE ... IF NOT EXISTS would otherwise
+-- silently skip an existing table). Pre-launch there is no prod data to preserve.
+-- Real forward/down migrations are the deferred Alembic tier (v2) — until then,
+-- a re-migrate wipes the store.
 
 DROP VIEW IF EXISTS market_movers;
 DROP MATERIALIZED VIEW IF EXISTS market_latest;
-DROP TABLE IF EXISTS market_observations, market_change_log CASCADE;
+DROP TABLE IF EXISTS market_observations, market_change_log,
+                     market_snapshots, market_topics, ingestion_runs CASCADE;
 
 -- ---------------------------------------------------------------------------
 -- ingestion_runs — one row per daily batch run
@@ -28,10 +35,10 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
     market_key    TEXT        NOT NULL,
     outcome       TEXT        NOT NULL,
     event_title   TEXT        NOT NULL,
-    probability   NUMERIC     NOT NULL,
-    raw_price     NUMERIC     NOT NULL,
-    volume        NUMERIC,
-    liquidity     NUMERIC,
+    probability   NUMERIC(9,6)  NOT NULL,
+    raw_price     NUMERIC(12,6) NOT NULL,
+    volume        NUMERIC(20,4),
+    liquidity     NUMERIC(20,4),
     confidence    TEXT        NOT NULL DEFAULT 'ok',
     observed_at   TIMESTAMPTZ NOT NULL,
     ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),

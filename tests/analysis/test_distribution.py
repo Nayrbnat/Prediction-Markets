@@ -39,9 +39,9 @@ def test_normalised_outcomes_sum_to_one() -> None:
         outcomes=[_outcome("Yes", "0.20"), _outcome("No", "0.87")],
     )
     total = sum(o.probability for o in dist.outcomes)
-    assert total == Decimal(1)
-    # 0.20 / 1.07 = 0.186915...  -- spot check first outcome
-    assert dist.outcomes[0].probability == Decimal("0.20") / Decimal("1.07")
+    assert total == Decimal("1.000000")
+    # 0.20 / 1.07 = 0.186915887...  -> quantized to 6 dp = 0.186916  (hand-checked)
+    assert dist.outcomes[0].probability == Decimal("0.186916")
     assert dist.outcomes[0].provenance.normalisation_factor == Decimal("1.07")
 
 
