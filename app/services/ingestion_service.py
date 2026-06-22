@@ -1,5 +1,9 @@
 """The cron/CLI ingestion run, as named steps:
-discover -> flag -> analyse/normalise -> upsert -> log material moves -> purge.
+discover -> build observations -> bulk upsert -> derive changes from returned rows -> purge.
+
+No N+1 reads: upsert_observations returns the upserted rows with previous_probability
+and probability_delta already computed by the DB SET clause. The service derives
+material change-log entries in Python from those returned rows.
 """
 
 from __future__ import annotations
@@ -19,16 +23,15 @@ logger = get_logger(__name__)
 
 
 async def _ingest_topic(
-    gateway: Gateway, repo: MarketRepository, settings: Settings, topic: str
-) -> tuple[list[MarketObservation], list[MarketObservation]]:
+    gateway: Gateway, settings: Settings, topic: str
+) -> list[MarketObservation]:
+    """Discover markets for a topic and build observation rows — no DB access."""
     tracked = topic in settings.high_priority
     priority = "high" if tracked else "normal"
     category = settings.categories.get(topic)
 
     refs = await gateway.discover(topic, venues=None, limit=settings.per_topic_limit)
     observations: list[MarketObservation] = []
-    changes: list[MarketObservation] = []
-
     for ref in refs:
         dist = await pricing.build_distribution(gateway, ref, settings)
         if dist is None:
@@ -37,27 +40,34 @@ async def _ingest_topic(
             dist, ref, priority=priority, tracked=tracked, category=category
         )
         observations.extend(rows)
+    return observations
 
-        if tracked:
-            existing = {o.outcome: o for o in await repo.read_market(ref.venue, ref.market_key)}
-            for row in rows:
-                prev = existing.get(row.outcome)
-                if prev is None:
-                    continue
-                change = probability_change(
-                    prev.probability, row.probability,
-                    material_threshold=settings.material_change,
-                )
-                if change.material:
-                    changes.append(
-                        row.model_copy(
-                            update={
-                                "previous_probability": change.previous,
-                                "probability_delta": change.delta,
-                            }
-                        )
-                    )
-    return observations, changes
+
+def _material_changes(
+    upserted: list[MarketObservation],
+    *,
+    settings: Settings,
+) -> list[MarketObservation]:
+    """Pure: filter upserted rows to those with material probability moves.
+
+    The DB RETURNING clause gives back previous_probability and probability_delta on
+    each upserted row. Apply the same analysis/changes.probability_change threshold
+    so materiality logic stays exclusively in analysis/.
+    """
+    result: list[MarketObservation] = []
+    for row in upserted:
+        if not row.tracked:
+            continue
+        if row.previous_probability is None:
+            continue  # first observation — no move to log
+        change = probability_change(
+            row.previous_probability,
+            row.probability,
+            material_threshold=settings.material_change,
+        )
+        if change.material:
+            result.append(row)
+    return result
 
 
 async def run_ingestion(
@@ -66,27 +76,30 @@ async def run_ingestion(
     topics = settings.topics
     logger.info("ingestion.start", extra={"topics": len(topics)})
 
+    # Fan-out discovery across topics — no DB reads inside _ingest_topic.
     results = await asyncio.gather(
-        *(_ingest_topic(gateway, repo, settings, t) for t in topics),
+        *(_ingest_topic(gateway, settings, t) for t in topics),
         return_exceptions=True,
     )
 
     all_obs: list[MarketObservation] = []
-    all_changes: list[MarketObservation] = []
     for topic, result in zip(topics, results, strict=False):
         if isinstance(result, BaseException):
             logger.warning("ingestion.topic_failed", extra={"topic": topic, "error": str(result)})
             continue
-        obs, changes = result
-        all_obs.extend(obs)
-        all_changes.extend(changes)
+        all_obs.extend(result)
 
-    await repo.upsert_observations(all_obs)
-    await repo.append_changes(all_changes)
+    # Single bulk upsert — returns rows with previous_probability/delta from the DB.
+    upserted = await repo.upsert_observations(all_obs)
+
+    # Derive material changes in Python — no second round-trip.
+    material = _material_changes(upserted, settings=settings)
+
+    await repo.append_changes(material)
     purged = await repo.purge_stale(settings.retention_days)
 
     logger.info(
         "ingestion.done",
-        extra={"markets": len(all_obs), "changes": len(all_changes), "purged": purged},
+        extra={"markets": len(all_obs), "changes": len(material), "purged": purged},
     )
-    return RefreshResult(markets=len(all_obs), changes=len(all_changes), purged=purged)
+    return RefreshResult(markets=len(all_obs), changes=len(material), purged=purged)

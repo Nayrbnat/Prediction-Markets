@@ -8,7 +8,7 @@ from app.core.errors import NotFoundError, PersistenceError
 from app.models.domain import MarketRef
 from app.models.provenance import Venue
 from app.models.responses import HistoryPoint, MarketDetail
-from app.services import discovery_service, pricing
+from app.services import pricing
 
 router = APIRouter()
 
@@ -27,10 +27,13 @@ async def search(
     venue: Venue | None = None,
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[MarketRef]:
-    refs, _ = await discovery_service.discover(
-        request.app.state.gateway, q, venues=[venue] if venue else None, limit=limit
-    )
-    return refs
+    repo = _require_repo(request)
+    observations = await repo.search_markets(q, venue, limit)
+    # Group by (venue, market_key) and return one MarketRef per market.
+    groups: dict[tuple[str, str], list] = {}
+    for obs in observations:
+        groups.setdefault((obs.venue, obs.market_key), []).append(obs)
+    return [pricing.ref_from_observations(grp) for grp in groups.values()]
 
 
 @router.get("/markets/history", response_model=list[HistoryPoint], tags=["markets"])
