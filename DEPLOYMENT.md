@@ -89,3 +89,65 @@ uvicorn app.main:app --reload   # http://localhost:8000/docs
 
 The full test suite mocks all network and the repository, so `pytest` needs no database or
 network. An optional persistence integration test runs only when `TEST_DATABASE_URL` is set.
+
+---
+
+## 6. Local Docker
+
+Spin up a full local stack (Postgres + migrate + API) with a single command:
+
+```bash
+docker compose up --build
+```
+
+Services start in dependency order: `db` (with a healthcheck) → `migrate` (one-shot DDL) →
+`api`. Once up, open <http://localhost:8000/ui> for the verification frontend, or
+<http://localhost:8000/docs> for the OpenAPI explorer.
+
+To rebuild after code changes:
+
+```bash
+docker compose up --build api
+```
+
+To reset the database volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+The default `DATABASE_URL` inside Compose is
+`postgresql://postgres:postgres@db:5432/predmarket`. The credentials are local-only
+development defaults; change `POSTGRES_PASSWORD` in `docker-compose.yml` and the
+corresponding `DATABASE_URL` for any non-throwaway environment.
+
+---
+
+## 7. Migrate to Supabase
+
+Supabase provides managed Postgres and is a straightforward drop-in for the Neon/pgbouncer
+pattern already used for Vercel.
+
+1. **Provision** — create a new Supabase project; the database is ready instantly.
+
+2. **Get the pooler connection string** — in the Supabase dashboard, go to
+   **Project Settings → Database → Connection pooling**. Copy the **Transaction mode** URL
+   (port `6543`). It looks like:
+   `postgresql://postgres.[ref]:[password]@aws-[region].pooler.supabase.com:6543/postgres`
+
+   > **Use port 6543, not 5432.** The transaction pooler (Supavisor / pgbouncer) does not
+   > support prepared statements. asyncpg is already configured with
+   > `statement_cache_size=0` to disable them — this is the fix for pgbouncer transaction mode.
+
+3. **Set `DATABASE_URL`** — add the pooler string as the `DATABASE_URL` environment variable
+   in your Vercel project (or `.env` for local runs against Supabase).
+
+4. **Run the migration once** — from your local machine (with the prod DSN in your shell):
+
+   ```bash
+   DATABASE_URL="postgresql://postgres.[ref]:..." python -m app.persistence.migrate
+   ```
+
+5. **Deploy** — `vercel deploy --prod`. Confirm `GET /health` returns `{"database": true}`
+   and `/ui` opens the verification frontend.

@@ -31,6 +31,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
+# v1 packages only. app.llm is a v2 seam (see ARCHITECTURE.md) — add it back when built.
 packages = [
     "app",
     "app.core",
@@ -38,7 +39,6 @@ packages = [
     "app.sources",
     "app.analysis",
     "app.persistence",
-    "app.llm",
     "app.services",
     "app.api",
 ]

@@ -30,7 +30,15 @@ async def create_pool(dsn: str) -> asyncpg.Pool | None:
         logger.error("db.pool.import_failed", extra={"reason": "asyncpg not installed"})
         return None
     try:
-        pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=5)
+        pool = await asyncpg.create_pool(
+            dsn=dsn,
+            min_size=1,
+            max_size=5,
+            # Supabase transaction pooler (pgbouncer, port 6543) does not support
+            # prepared statements. Disable asyncpg's statement cache so every
+            # query is sent as a simple query rather than a named prepared statement.
+            statement_cache_size=0,
+        )
         logger.info("db.pool.open")
         return pool
     except Exception as exc:  # noqa: BLE001 - boot must not fail on DB unavailability

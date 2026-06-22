@@ -86,3 +86,12 @@ def test_internal_refresh_requires_auth() -> None:
     assert unauth.status_code == 401
     assert ok.status_code == 200
     assert ok.json()["status"] == "ok"
+
+
+def test_ui_smoke() -> None:
+    """GET /ui/ should serve the verification frontend with an HTML content-type."""
+    app = create_app()
+    with TestClient(app, follow_redirects=True) as client:
+        resp = client.get("/ui/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")

@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: predmarket
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Host port is configurable (default 5432). Override when the host already
+    # runs Postgres on 5432, e.g. `DB_PORT=5434 docker compose up`. The api/migrate
+    # services always reach the db over the Docker network at db:5432 regardless.
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    command: python -m app.persistence.migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/predmarket
+    restart: "no"
+
+  api:
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/predmarket
+      INGEST_TOPICS: fed rate decision
+      KALSHI_SERIES_MAP: '{"fed rate decision":"KXFEDDECISION"}'
+      CRON_SECRET: change-me
+      LOG_FORMAT: json
+
+volumes:
+  pgdata:

@@ -5,8 +5,11 @@ lifespan that opens/closes the Postgres pool. Exposes ``app`` for uvicorn / Verc
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.api import analyze, health, internal, markets
@@ -17,6 +20,10 @@ from app.core.logging import get_logger, setup_logging
 from app.core.middleware import CorrelationIdMiddleware
 from app.persistence.repository import PostgresMarketRepository
 from app.services.gateway import HttpGateway
+
+# Resolved at import time so it works under uvicorn, Docker, and Vercel
+# regardless of the process working directory.
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 logger = get_logger(__name__)
 
@@ -56,6 +63,19 @@ def create_app() -> FastAPI:
     app.include_router(analyze.router)
     app.include_router(markets.router)
     app.include_router(internal.router)
+
+    # Root redirect → verification frontend
+    @app.get("/", include_in_schema=False)
+    async def root_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
+
+    # Serve the self-contained verification frontend (no build step required).
+    # html=True enables automatic index.html resolution for directory requests.
+    if _FRONTEND_DIR.is_dir():
+        app.mount("/ui", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="ui")
+    else:
+        logger.warning("frontend.missing", extra={"path": str(_FRONTEND_DIR)})
+
     return app
 
 
