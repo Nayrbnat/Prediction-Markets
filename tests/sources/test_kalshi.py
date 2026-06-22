@@ -104,3 +104,66 @@ async def test_schema_drift_raises() -> None:
         async with make_client(base_url=BASE) as client:
             with pytest.raises(SchemaDriftError):
                 await kalshi.discover(client, "fed", series_tickers=["KXFEDDECISION"])
+
+
+# ---------------------------------------------------------------------------
+# Binary complement fix: No last_trade = 1 − yes last
+# ---------------------------------------------------------------------------
+
+async def test_binary_no_last_trade_is_complement_of_yes_last() -> None:
+    """For non-exclusive binary markets, last_trades[1] (No) must equal 1 − last_trades[0]."""
+    payload = {"events": [{
+        "event_ticker": "KXIND",
+        "title": "Binary test",
+        "mutually_exclusive": False,
+        "markets": [
+            {
+                "ticker": "A",
+                "yes_sub_title": "Rain tomorrow",
+                "yes_bid_dollars": "0.40",
+                "yes_ask_dollars": "0.44",
+                "last_price_dollars": "0.42",
+                "no_bid_dollars": "0.56",
+                "no_ask_dollars": "0.60",
+                "status": "active",
+            },
+        ],
+    }]}
+    async with respx.mock:
+        respx.get(f"{BASE}/events").mock(return_value=Response(200, json=payload))
+        async with make_client(base_url=BASE) as client:
+            refs = await kalshi.discover(client, "weather", series_tickers=["KXWEATHER"])
+    assert len(refs) == 1
+    ref = refs[0]
+    # Yes last = 0.42; No last must be 1 − 0.42 = 0.58 (q6)
+    assert ref.last_trades[0] == Decimal("0.42")
+    assert ref.last_trades[1] == Decimal("0.580000")  # complement, quantized
+
+
+async def test_binary_no_last_trade_none_when_yes_last_absent() -> None:
+    """If last_price_dollars is absent for Yes, No last must remain None (no fabrication)."""
+    payload = {"events": [{
+        "event_ticker": "KXIND2",
+        "title": "No last test",
+        "mutually_exclusive": False,
+        "markets": [
+            {
+                "ticker": "B",
+                "yes_sub_title": "Snow tomorrow",
+                "yes_bid_dollars": "0.10",
+                "yes_ask_dollars": "0.12",
+                # last_price_dollars deliberately absent
+                "no_bid_dollars": "0.88",
+                "no_ask_dollars": "0.90",
+                "status": "active",
+            },
+        ],
+    }]}
+    async with respx.mock:
+        respx.get(f"{BASE}/events").mock(return_value=Response(200, json=payload))
+        async with make_client(base_url=BASE) as client:
+            refs = await kalshi.discover(client, "weather", series_tickers=["KXWEATHER"])
+    assert len(refs) == 1
+    ref = refs[0]
+    assert ref.last_trades[0] is None
+    assert ref.last_trades[1] is None

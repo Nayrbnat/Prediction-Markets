@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from app.analysis.probability import complement
 from app.core.errors import SchemaDriftError
 from app.core.http import fetch_json
 from app.core.logging import get_logger
@@ -173,7 +174,8 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 quoted_prices=[yes, Decimal(1) - yes],
                 best_bids=[yes_bid, no_bid],
                 best_asks=[yes_ask, no_ask],
-                last_trades=[last, None],  # last_price_dollars is for Yes side
+                # No last = 1 − yes last (binary complement identity)
+                last_trades=[last, complement(last) if last is not None else None],
                 outcome_volumes_24h=[vol_24h, vol_24h],  # market-level, shared
                 outcome_volumes_total=[vol_total, vol_total],
                 open_interests=[oi, oi],  # market-level OI shared across Yes/No

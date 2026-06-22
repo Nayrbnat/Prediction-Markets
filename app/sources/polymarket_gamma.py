@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from app.analysis.probability import complement
 from app.core.errors import SchemaDriftError
 from app.core.http import fetch_json
 from app.core.logging import get_logger
@@ -54,14 +55,26 @@ def _dec(value: object) -> Decimal | None:
 
 
 def _binary_ref(
-    market: dict, *, event_id: str, event_title: str, topic: str
+    market: dict,
+    *,
+    event_id: str,
+    event_title: str,
+    topic: str,
+    event_open_interest: Decimal | None = None,
 ) -> MarketRef | None:
     """One Yes/No MarketRef from a single binary market (CLOB-priced).
 
-    Polymarket only books the Yes token; bid/ask/last are available for outcome[0]
-    (Yes) only.  The complement side (outcome[1], typically "No") gets NULL for those
-    fields — never fabricated.  Volume fields are market-level and shared across both
-    outcomes.
+    Polymarket only books the Yes token, so bid/ask/last are primary for outcome[0]
+    (Yes).  For the complement side (outcome[1], "No") we apply the no-arbitrage
+    identity for complementary binary pairs:
+        no_bid  = 1 − yes_ask
+        no_ask  = 1 − yes_bid
+        no_last = 1 − yes_last
+    Each is derived only when the Yes source value is present; never fabricated from
+    None.  This is the same identity already used to derive the No *probability*.
+
+    ``event_open_interest`` is the event-level OI threaded in from ``_event_to_refs``
+    (market-level OI is not reliably present for binary markets).
     """
     try:
         outcomes = [str(o) for o in _as_list(market.get("outcomes"))]
@@ -76,13 +89,25 @@ def _binary_ref(
             return None
 
         n = len(outcomes)
-        # Yes-token bid/ask/last (index 0); No-side is NULL — only one token traded.
+        # Yes-token bid/ask/last (index 0); No-side derived via complement identity.
         yes_bid = _dec(market.get("bestBid"))
         yes_ask = _dec(market.get("bestAsk"))
         yes_last = _dec(market.get("lastTradePrice"))
-        best_bids: list[Decimal | None] = [yes_bid] + [None] * (n - 1)
-        best_asks: list[Decimal | None] = [yes_ask] + [None] * (n - 1)
-        last_trades: list[Decimal | None] = [yes_last] + [None] * (n - 1)
+
+        # Complement identity: no_bid = 1−yes_ask, no_ask = 1−yes_bid (binary only).
+        no_bid: Decimal | None = complement(yes_ask) if yes_ask is not None else None
+        no_ask: Decimal | None = complement(yes_bid) if yes_bid is not None else None
+        no_last: Decimal | None = complement(yes_last) if yes_last is not None else None
+
+        if n == 2:
+            best_bids: list[Decimal | None] = [yes_bid, no_bid]
+            best_asks: list[Decimal | None] = [yes_ask, no_ask]
+            last_trades: list[Decimal | None] = [yes_last, no_last]
+        else:
+            # Non-standard outcome count: fill remaining slots with None.
+            best_bids = [yes_bid] + [None] * (n - 1)
+            best_asks = [yes_ask] + [None] * (n - 1)
+            last_trades = [yes_last] + [None] * (n - 1)
 
         # Volume/volume_total are market-level (both outcomes share the same market).
         vol_24h = _dec(market.get("volume24hr"))
@@ -90,8 +115,8 @@ def _binary_ref(
         outcome_volumes_24h: list[Decimal | None] = [vol_24h] * n
         outcome_volumes_total: list[Decimal | None] = [vol_total] * n
 
-        # open_interest is not reliably exposed at market level for binary markets.
-        open_interests: list[Decimal | None] = [None] * n
+        # open_interest: use event-level value threaded in from _event_to_refs.
+        open_interests: list[Decimal | None] = [event_open_interest] * n
 
         return MarketRef(
             venue=VENUE,
@@ -199,9 +224,16 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
         ref = _multi_outcome_ref(event, active, topic=topic)
         return [ref] if ref is not None else []
 
+    event_oi = _dec(event.get("openInterest"))
     refs: list[MarketRef] = []
     for m in active:
-        ref = _binary_ref(m, event_id=event_id, event_title=event_title, topic=topic)
+        ref = _binary_ref(
+            m,
+            event_id=event_id,
+            event_title=event_title,
+            topic=topic,
+            event_open_interest=event_oi,
+        )
         if ref is not None:
             refs.append(ref)
     return refs

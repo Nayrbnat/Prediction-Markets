@@ -18,6 +18,16 @@ def q6(x: Decimal) -> Decimal:
     return x.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
 
+def complement(x: Decimal) -> Decimal:
+    """Return the probability complement (1 − x), quantized to 6 dp. Pure.
+
+    Used exclusively for **binary** complementary outcome pairs (e.g. Yes/No)
+    where the No side is the financial identity of 1 − Yes.  Never apply to
+    multi-outcome independent candidates.
+    """
+    return q6(Decimal(1) - x)
+
+
 def mid_price(book: OrderBookTop) -> Decimal | None:
     """Best-bid/ask midpoint, falling back to an explicit ``mid`` if present."""
     if book.best_bid is not None and book.best_ask is not None:
