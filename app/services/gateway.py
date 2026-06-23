@@ -13,11 +13,11 @@ from app.core.http import make_client
 from app.core.logging import get_logger
 from app.models.domain import MarketRef, OrderBookTop
 from app.models.provenance import Venue
-from app.sources import kalshi, polymarket_clob, polymarket_gamma
+from app.sources import cme_fedfunds, kalshi, polymarket_clob, polymarket_gamma
 
 logger = get_logger(__name__)
 
-_ALL_VENUES: list[Venue] = ["polymarket", "kalshi"]
+_ALL_VENUES: list[Venue] = ["polymarket", "kalshi", "cme"]
 
 
 class Gateway(Protocol):
@@ -38,6 +38,9 @@ class HttpGateway:
         self._gamma = make_client(settings.gamma_base_url)
         self._clob = make_client(settings.clob_base_url)
         self._kalshi = make_client(settings.kalshi_base_url)
+        # CME source reads two free endpoints: Yahoo (ZQ prices) + NY Fed (EFFR).
+        self._cme_yahoo = make_client(settings.yahoo_chart_base_url)
+        self._cme_nyfed = make_client(settings.nyfed_rates_base_url)
 
     async def discover(
         self, topic: str, *, venues: list[Venue] | None = None, limit: int = 50
@@ -67,6 +70,22 @@ class HttpGateway:
                 )
             )
             labels.append("kalshi")
+        if (
+            "cme" in want
+            and self._settings.cme_enabled
+            and topic in self._settings.cme_topic_set
+        ):
+            tasks.append(
+                cme_fedfunds.discover(
+                    self._cme_yahoo,
+                    self._cme_nyfed,
+                    topic,
+                    meetings=self._settings.fomc_meeting_dates,
+                    horizon=self._settings.cme_meeting_horizon,
+                    limit=limit,
+                )
+            )
+            labels.append("cme")
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         refs: list[MarketRef] = []
@@ -91,5 +110,7 @@ class HttpGateway:
             self._gamma.aclose(),
             self._clob.aclose(),
             self._kalshi.aclose(),
+            self._cme_yahoo.aclose(),
+            self._cme_nyfed.aclose(),
             return_exceptions=True,
         )

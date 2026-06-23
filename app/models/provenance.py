@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Venue = Literal["polymarket", "kalshi"]
+Venue = Literal["polymarket", "kalshi", "cme"]
 ConfidenceLevel = Literal["ok", "thin", "stale"]
 
 DISCLAIMER = (

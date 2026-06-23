@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 _SIGNALS: dict[Venue, list[str]] = {
     "polymarket": ["price", "volume", "depth"],  # smart-money tilt is v2
     "kalshi": ["price", "volume", "depth"],
+    "cme": ["futures-implied"],  # ZQ-derived probability only — no order book / per-trader data
 }
 
 

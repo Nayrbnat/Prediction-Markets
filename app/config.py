@@ -8,6 +8,7 @@ trivial and robust across pydantic-settings versions.
 from __future__ import annotations
 
 import json
+from datetime import date
 from decimal import Decimal
 from functools import lru_cache
 
@@ -60,6 +61,15 @@ class Settings(BaseSettings):
     digest_from: str = ""
     digest_to: str = ""  # comma-separated recipient list
 
+    # ---- CME Fed Funds futures (relative-value vs prediction markets) ---
+    cme_enabled: bool = False
+    cme_topics: str = "fed rate decision"  # CSV of topics the CME source serves
+    cme_meeting_horizon: int = 2  # number of upcoming FOMC meetings to price
+    fomc_meetings: str = ""  # CSV of ISO FOMC announcement dates (e.g. 2026-07-29)
+    rv_gap_threshold: Decimal = Decimal("0.05")  # |market − futures| pp to flag a divergence
+    yahoo_chart_base_url: str = "https://query1.finance.yahoo.com"
+    nyfed_rates_base_url: str = "https://markets.newyorkfed.org"
+
     # ---- SMTP (leave blank to use ConsoleEmailSender) -------------------
     smtp_host: str = ""
     smtp_port: int = 587
@@ -95,6 +105,22 @@ class Settings(BaseSettings):
     def digest_recipients(self) -> list[str]:
         """Parsed list of digest email recipients from the CSV ``digest_to`` field."""
         return _csv(self.digest_to)
+
+    @property
+    def cme_topic_set(self) -> set[str]:
+        """Topics the CME Fed Funds source should serve."""
+        return set(_csv(self.cme_topics))
+
+    @property
+    def fomc_meeting_dates(self) -> list[date]:
+        """Parsed FOMC announcement dates (skips malformed tokens)."""
+        out: list[date] = []
+        for token in _csv(self.fomc_meetings):
+            try:
+                out.append(date.fromisoformat(token))
+            except ValueError:
+                continue
+        return out
 
 
 @lru_cache
