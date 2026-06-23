@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prediction Market Analyzer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      max-width: 860px;
+      margin: 0 auto 2rem;
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #f8fafc;
+    }
+
+    header p {
+      margin-top: 0.25rem;
+      font-size: 0.85rem;
+      color: #64748b;
+    }
+
+    .search-bar {
+      max-width: 860px;
+      margin: 0 auto 2rem;
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .search-bar input {
+      flex: 1;
+      padding: 0.65rem 1rem;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #e2e8f0;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .search-bar input:focus { border-color: #6366f1; }
+
+    .search-bar button {
+      padding: 0.65rem 1.4rem;
+      border-radius: 8px;
+      border: none;
+      background: #6366f1;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    .search-bar button:hover:not(:disabled) { background: #4f46e5; }
+    .search-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #status {
+      max-width: 860px;
+      margin: 0 auto 1.5rem;
+      font-size: 0.85rem;
+    }
+
+    .status-loading { color: #94a3b8; }
+    .status-error   { color: #f87171; }
+
+    #meta {
+      max-width: 860px;
+      margin: 0 auto 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .badge-venue   { background: #1e3a5f; color: #7dd3fc; }
+    .badge-stale   { background: #451a03; color: #fbbf24; }
+    .badge-note    { background: #1c1f26; color: #94a3b8; border: 1px solid #334155; }
+
+    #cards {
+      max-width: 860px;
+      margin: 0 auto;
+      display: grid;
+      gap: 1rem;
+    }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #f1f5f9;
+      line-height: 1.4;
+    }
+
+    .card-venue {
+      flex-shrink: 0;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+    }
+
+    .venue-polymarket { background: #1a3352; color: #60a5fa; }
+    .venue-kalshi     { background: #1a2e1a; color: #4ade80; }
+
+    .outcome-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .outcome-label {
+      width: 5rem;
+      flex-shrink: 0;
+      font-size: 0.8rem;
+      color: #94a3b8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .bar-track {
+      flex: 1;
+      height: 8px;
+      background: #0f172a;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: #6366f1;
+      transition: width 0.4s ease;
+    }
+
+    .bar-fill.high { background: #22c55e; }
+    .bar-fill.mid  { background: #6366f1; }
+    .bar-fill.low  { background: #f59e0b; }
+
+    .outcome-pct {
+      width: 3.5rem;
+      text-align: right;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: #e2e8f0;
+      flex-shrink: 0;
+    }
+
+    #disclaimer {
+      max-width: 860px;
+      margin: 2rem auto 0;
+      padding: 0.85rem 1rem;
+      background: #1a1f2e;
+      border: 1px solid #1e3a5f;
+      border-radius: 8px;
+      font-size: 0.75rem;
+      color: #64748b;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Prediction Market Analyzer</h1>
+    <p>Enter a topic to fetch live probability distributions from Polymarket and Kalshi.</p>
+  </header>
+
+  <form class="search-bar" id="form">
+    <input id="topic" type="text" placeholder="e.g. fed rate decision" autocomplete="off" />
+    <button type="submit" id="btn">Analyze</button>
+  </form>
+
+  <div id="status"></div>
+  <div id="meta"></div>
+  <div id="cards"></div>
+  <div id="disclaimer"></div>
+
+  <script>
+    const form = document.getElementById('form');
+    const topicInput = document.getElementById('topic');
+    const btn = document.getElementById('btn');
+    const statusEl = document.getElementById('status');
+    const metaEl = document.getElementById('meta');
+    const cardsEl = document.getElementById('cards');
+    const disclaimerEl = document.getElementById('disclaimer');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const topic = topicInput.value.trim();
+      if (!topic) return;
+
+      btn.disabled = true;
+      statusEl.className = 'status-loading';
+      statusEl.textContent = 'Analyzing…';
+      metaEl.innerHTML = '';
+      cardsEl.innerHTML = '';
+      disclaimerEl.textContent = '';
+
+      try {
+        const resp = await fetch('/analyze', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ topic }),
+        });
+
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${text}`);
+        }
+
+        const data = await resp.json();
+        statusEl.textContent = '';
+        render(data);
+      } catch (err) {
+        statusEl.className = 'status-error';
+        statusEl.textContent = `Error: ${err.message}`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    function render(data) {
+      // --- meta badges ---
+      const badges = [];
+
+      if (data.stale) {
+        badges.push(makeBadge('Stale data', 'badge-stale'));
+      }
+
+      (data.venue_availability ?? []).forEach((v) => {
+        // v is a VenueAvailability object: {venue, matched, signals, note}
+        const label = v.matched
+          ? `${v.venue}: matched`
+          : `${v.venue}: no match`;
+        badges.push(makeBadge(label, 'badge-venue'));
+        if (v.note) badges.push(makeBadge(v.note, 'badge-note'));
+      });
+
+      (data.notes ?? []).forEach((n) => {
+        badges.push(makeBadge(n, 'badge-note'));
+      });
+
+      metaEl.innerHTML = '';
+      badges.forEach((b) => metaEl.appendChild(b));
+
+      // --- distribution cards ---
+      cardsEl.innerHTML = '';
+      const dists = data.distributions ?? [];
+
+      if (dists.length === 0) {
+        statusEl.className = 'status-error';
+        statusEl.textContent = 'No markets found for this topic.';
+        return;
+      }
+
+      dists.forEach((dist) => {
+        const card = document.createElement('div');
+        card.className = 'card';
+
+        const header = document.createElement('div');
+        header.className = 'card-header';
+
+        const title = document.createElement('div');
+        title.className = 'card-title';
+        title.textContent = dist.event_title ?? dist.market_key ?? '—';
+
+        const venueTag = document.createElement('span');
+        venueTag.className = `card-venue venue-${dist.venue ?? ''}`;
+        venueTag.textContent = dist.venue ?? '';
+
+        header.appendChild(title);
+        header.appendChild(venueTag);
+        card.appendChild(header);
+
+        // Sort outcomes by probability descending
+        const outcomes = [...(dist.outcomes ?? [])].sort(
+          (a, b) => (b.probability ?? 0) - (a.probability ?? 0)
+        );
+
+        outcomes.forEach((o) => {
+          const pct = Math.round((o.probability ?? 0) * 100);
+          const row = document.createElement('div');
+          row.className = 'outcome-row';
+
+          const label = document.createElement('div');
+          label.className = 'outcome-label';
+          label.textContent = o.outcome ?? '—';
+          label.title = label.textContent;
+
+          const track = document.createElement('div');
+          track.className = 'bar-track';
+
+          const fill = document.createElement('div');
+          fill.className = `bar-fill ${pct >= 60 ? 'high' : pct >= 35 ? 'mid' : 'low'}`;
+          fill.style.width = `${pct}%`;
+
+          track.appendChild(fill);
+
+          const pctLabel = document.createElement('div');
+          pctLabel.className = 'outcome-pct';
+          pctLabel.textContent = `${pct}%`;
+
+          row.appendChild(label);
+          row.appendChild(track);
+          row.appendChild(pctLabel);
+          card.appendChild(row);
+        });
+
+        cardsEl.appendChild(card);
+      });
+
+      // --- disclaimer ---
+      if (data.disclaimer) {
+        disclaimerEl.textContent = data.disclaimer;
+      }
+    }
+
+    function makeBadge(text, cls) {
+      const el = document.createElement('span');
+      el.className = `badge ${cls}`;
+      el.textContent = text;
+      return el;
+    }
+  </script>
+</body>
+</html>
