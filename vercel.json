@@ -1,10 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "app/main.py": {
-      "excludeFiles": "{tests/**,**/test_*.py,frontend/**,*.md,docker-compose.yml,Dockerfile}"
-    }
-  },
   "crons": [
     { "path": "/internal/refresh", "schedule": "0 6 * * *" }
   ]
