@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.analysis.divergence import canonical_outcome, compare
+from app.analysis.divergence import canonical_outcome, compare, cut_hold_raise
 from app.models.domain import MarketObservation
 
 SEP = datetime(2026, 9, 16, tzinfo=timezone.utc)
@@ -31,6 +31,27 @@ def test_canonical_outcome_mapping_across_venues() -> None:
     assert canonical_outcome("Cut >25bps") == "50+ bps cut"  # Kalshi
     assert canonical_outcome("No change") == "No change"  # CME / Polymarket
     assert canonical_outcome("totally unknown") is None
+
+
+def test_cut_hold_raise_collapses_buckets() -> None:
+    pairs = [
+        ("25 bps decrease", Decimal("0.05")),  # Polymarket cut
+        ("50+ bps decrease", Decimal("0.02")),  # Polymarket big cut
+        ("No change", Decimal("0.73")),
+        ("25 bps increase", Decimal("0.18")),  # Polymarket hike
+        ("50+ bps increase", Decimal("0.02")),  # Polymarket big hike
+    ]
+    result = cut_hold_raise(pairs)
+    assert result is not None
+    cut, hold, hike = result
+    assert cut == Decimal("0.07")  # 0.05 + 0.02
+    assert hold == Decimal("0.73")
+    assert hike == Decimal("0.20")  # 0.18 + 0.02
+
+
+def test_cut_hold_raise_returns_none_for_unmapped_market() -> None:
+    # A "number of dissents" market has no Fed cut/hold/raise outcomes.
+    assert cut_hold_raise([("0", Decimal("0.6")), ("1", Decimal("0.4"))]) is None
 
 
 def test_gap_computed_market_minus_futures() -> None:
