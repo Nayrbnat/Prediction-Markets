@@ -51,13 +51,18 @@ class InMemoryMarketRepository(MarketRepository):
     async def ping(self) -> bool:
         return True
 
-    async def upsert_observations(self, observations: list[MarketObservation]) -> None:
+    async def upsert_observations(
+        self, observations: list[MarketObservation]
+    ) -> list[MarketObservation]:
+        """Mirror the SQL RETURNING contract: return the stored rows after upsert,
+        with previous_probability and probability_delta populated."""
+        upserted: list[MarketObservation] = []
         for obs in observations:
             key = (obs.venue, obs.market_key, obs.outcome)
             existing = self.store.get(key)
             now = _now()
             if existing is None:
-                self.store[key] = obs.model_copy(
+                stored = obs.model_copy(
                     update={
                         "previous_probability": None,
                         "probability_delta": None,
@@ -69,7 +74,7 @@ class InMemoryMarketRepository(MarketRepository):
                 )
             else:
                 changed = obs.probability != existing.probability
-                self.store[key] = obs.model_copy(
+                stored = obs.model_copy(
                     update={
                         "previous_probability": existing.probability,
                         "probability_delta": obs.probability - existing.probability,
@@ -82,6 +87,9 @@ class InMemoryMarketRepository(MarketRepository):
                         "updated_at": now,
                     }
                 )
+            self.store[key] = stored
+            upserted.append(stored)
+        return upserted
 
     async def append_changes(self, observations: list[MarketObservation]) -> None:
         self.changelog.extend(o.model_copy() for o in observations)
@@ -98,6 +106,18 @@ class InMemoryMarketRepository(MarketRepository):
         tracked = [o for o in self.store.values() if o.tracked]
         tracked.sort(key=lambda o: abs(o.probability_delta or 0), reverse=True)
         return tracked[:limit]
+
+    async def search_markets(
+        self, q: str, venue: str | None, limit: int
+    ) -> list[MarketObservation]:
+        q_lower = q.lower()
+        results = [
+            o for o in self.store.values()
+            if (venue is None or o.venue == venue)
+            and (q_lower in (o.topic or "").lower() or q_lower in o.event_title.lower())
+        ]
+        results.sort(key=lambda o: (o.venue, o.market_key, o.outcome))
+        return results[:limit]
 
     async def history(
         self, venue: str, market_key: str, outcome: str, limit: int = 100

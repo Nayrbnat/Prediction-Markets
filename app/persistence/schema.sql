@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS market_observations (
 CREATE INDEX IF NOT EXISTS idx_obs_topic      ON market_observations (topic);
 CREATE INDEX IF NOT EXISTS idx_obs_tracked    ON market_observations (tracked) WHERE tracked;
 CREATE INDEX IF NOT EXISTS idx_obs_last_seen  ON market_observations (last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_obs_event_title ON market_observations (event_title);
+
+-- Partial expression index for the top-movers query (ORDER BY abs(probability_delta) DESC WHERE tracked).
+CREATE INDEX IF NOT EXISTS idx_obs_tracked_delta
+    ON market_observations (abs(probability_delta) DESC)
+    WHERE tracked;
 
 CREATE TABLE IF NOT EXISTS market_change_log (
     id                    BIGSERIAL   PRIMARY KEY,
