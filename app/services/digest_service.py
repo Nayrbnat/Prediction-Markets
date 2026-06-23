@@ -7,16 +7,29 @@ the repository abstraction.
 
 from __future__ import annotations
 
+import calendar
 from datetime import datetime, timezone
 
 from app.analysis.divergence import compare as compare_divergences
+from app.analysis.divergence import cut_hold_raise
+from app.analysis.probability import q6
 from app.config import Settings
 from app.core.logging import get_logger
-from app.models.digest import MarketDigest, OutcomeProb, TrackedMarket
+from app.models.digest import (
+    MarketDigest,
+    MeetingMatrix,
+    OutcomeProb,
+    SourceProbs,
+    TrackedMarket,
+)
 from app.models.domain import MarketObservation
 from app.persistence.repository import MarketRepository
 
 logger = get_logger(__name__)
+
+# Display label + sort order per venue for the cut/hold/raise matrix.
+_SOURCE_LABEL = {"polymarket": "Polymarket", "kalshi": "Kalshi", "cme": "Futures"}
+_SOURCE_ORDER = {"polymarket": 0, "kalshi": 1, "cme": 2}
 
 
 def _group_tracked(observations: list[MarketObservation]) -> list[TrackedMarket]:
@@ -46,6 +59,62 @@ def _group_tracked(observations: list[MarketObservation]) -> list[TrackedMarket]
     return sorted(groups.values(), key=lambda m: (m.venue, m.market_key))
 
 
+def _build_meeting_matrices(
+    observations: list[MarketObservation],
+) -> tuple[list[MeetingMatrix], set[tuple[str, str]]]:
+    """Group tracked obs into per-meeting cut/hold/raise rows, one row per source.
+
+    Returns (matrices, mapped_keys). ``mapped_keys`` are the (venue, market_key) markets
+    that fit the Fed cut/hold/raise schema — the caller routes the rest to the generic
+    "other tracked" list. Markets with no close_date or non-Fed outcomes are not mapped.
+    """
+    by_market: dict[tuple[str, str], dict] = {}
+    for obs in observations:
+        key = (obs.venue, obs.market_key)
+        entry = by_market.setdefault(
+            key, {"pairs": [], "close_date": obs.close_date, "venue": obs.venue}
+        )
+        entry["pairs"].append((obs.outcome, obs.probability))
+
+    meetings: dict[tuple[int, int], MeetingMatrix] = {}
+    seen_source: dict[tuple[int, int], set[str]] = {}
+    mapped: set[tuple[str, str]] = set()
+    for (venue, market_key), entry in by_market.items():
+        collapsed = cut_hold_raise(entry["pairs"])
+        close_date = entry["close_date"]
+        if collapsed is None or close_date is None:
+            continue  # not Fed cut/hold/raise, or unplaceable -> generic tracked list
+        mkey = (close_date.year, close_date.month)
+        if venue in seen_source.setdefault(mkey, set()):
+            continue  # one row per source per meeting
+        seen_source[mkey].add(venue)
+        mapped.add((venue, market_key))
+
+        cut, hold, hike = collapsed
+        matrix = meetings.get(mkey)
+        if matrix is None:
+            matrix = MeetingMatrix(
+                meeting=f"{calendar.month_abbr[close_date.month]} {close_date.year}",
+                close_date=close_date,
+                rows=[],
+            )
+            meetings[mkey] = matrix
+        matrix.rows.append(
+            SourceProbs(
+                source=_SOURCE_LABEL.get(venue, venue),
+                venue=venue,
+                cut=q6(cut),
+                hold=q6(hold),
+                raise_=q6(hike),
+            )
+        )
+
+    ordered = sorted(meetings.values(), key=lambda m: m.close_date or datetime.max)
+    for matrix in ordered:
+        matrix.rows.sort(key=lambda r: _SOURCE_ORDER.get(r.venue, 99))
+    return ordered, mapped
+
+
 async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDigest:
     """Assemble the daily digest from repository reads.
 
@@ -65,8 +134,16 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
     tracked_obs = await repo.read_tracked_current()
     logger.info("digest.tracked_fetched", extra={"rows": len(tracked_obs)})
 
-    # Step 3: group into TrackedMarket objects
-    tracked = _group_tracked(tracked_obs)
+    # Step 3: cut/hold/raise matrix per FOMC meeting (Polymarket vs Kalshi vs Futures).
+    matrices, mapped_keys = _build_meeting_matrices(tracked_obs)
+    # Anything not in the Fed cut/hold/raise schema falls back to the generic list.
+    tracked = _group_tracked(
+        [o for o in tracked_obs if (o.venue, o.market_key) not in mapped_keys]
+    )
+    logger.info(
+        "digest.matrices",
+        extra={"meetings": len(matrices), "other_tracked": len(tracked)},
+    )
 
     # Step 4: relative value — market vs Fed-funds-futures-implied, same meeting.
     # Reuses the tracked observations (which include the `cme` venue) — no extra read.
@@ -81,6 +158,7 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
         generated_for=generated_for,
         mover_threshold=settings.mover_threshold,
         movers=movers,
+        meeting_matrices=matrices,
         tracked=tracked,
         divergences=divergences,
         mover_count=len(movers),
@@ -91,6 +169,7 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
         "digest.assembled",
         extra={
             "mover_count": digest.mover_count,
+            "meeting_count": len(matrices),
             "tracked_count": digest.tracked_count,
             "divergence_count": digest.divergence_count,
             "generated_for": str(generated_for),

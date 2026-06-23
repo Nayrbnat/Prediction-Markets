@@ -7,7 +7,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.models.digest import DivergenceItem, MarketDigest, MoverItem, TrackedMarket
+from app.models.digest import (
+    DivergenceItem,
+    MarketDigest,
+    MeetingMatrix,
+    MoverItem,
+    TrackedMarket,
+)
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -62,6 +68,29 @@ def _render_divergence_html(d: DivergenceItem) -> str:
         f'<td style="padding:4px 8px;color:#888;font-size:0.9em">{d.market_venue}</td>'
         f'</tr>'
     )
+
+
+def _prob_cell(v: Decimal, hi: Decimal) -> str:
+    """A cut/hold/raise table cell; bold when it's the row's highest probability."""
+    bold = "font-weight:bold;" if v == hi else ""
+    return f'<td style="padding:4px 8px;{bold}">{_pct(v)}</td>'
+
+
+def _render_matrix_rows_html(matrices: list[MeetingMatrix]) -> str:
+    rows: list[str] = []
+    for matrix in matrices:
+        for i, r in enumerate(matrix.rows):
+            top = "border-top:2px solid #ccc;" if i == 0 else ""
+            hi = max(r.cut, r.hold, r.raise_)
+            meeting_cell = matrix.meeting if i == 0 else ""
+            rows.append(
+                f'<tr style="{top}">'
+                f'<td style="padding:4px 8px;font-weight:bold">{meeting_cell}</td>'
+                f'<td style="padding:4px 8px;color:#555">{r.source}</td>'
+                f'{_prob_cell(r.cut, hi)}{_prob_cell(r.hold, hi)}{_prob_cell(r.raise_, hi)}'
+                f'</tr>'
+            )
+    return "\n".join(rows)
 
 
 def _render_tracked_html(tm: TrackedMarket) -> str:
@@ -127,6 +156,34 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
             f'{_pct(digest.mover_threshold)} today.</p>'
         )
 
+    # Cut / Hold / Raise matrix per meeting (Polymarket vs Kalshi vs Futures side-by-side).
+    if digest.meeting_matrices:
+        matrix_rows = _render_matrix_rows_html(digest.meeting_matrices)
+        matrix_section = f"""
+<h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
+  Rate-decision probabilities by source
+  <span style="font-size:0.75em;color:#888;font-weight:normal">
+    — Cut / Hold / Raise per FOMC meeting; futures = ZQ-implied
+  </span>
+</h2>
+<table style="{table_style}">
+  <thead>
+    <tr>
+      <th style="{th_style}">Meeting</th>
+      <th style="{th_style}">Source</th>
+      <th style="{th_style}">Cut</th>
+      <th style="{th_style}">Hold</th>
+      <th style="{th_style}">Raise</th>
+    </tr>
+  </thead>
+  <tbody>
+{matrix_rows}
+  </tbody>
+</table>
+"""
+    else:
+        matrix_section = ""
+
     # Relative-value section (market vs Fed-funds-futures-implied) — material gaps only.
     material_divs = [d for d in digest.divergences if d.material]
     if material_divs:
@@ -157,12 +214,12 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
     else:
         divergence_section = ""
 
-    # Tracked markets section
+    # Other tracked markets (those that don't fit the Fed cut/hold/raise schema).
     if digest.tracked:
         tracked_rows = "\n".join(_render_tracked_html(tm) for tm in digest.tracked)
         tracked_section = f"""
 <h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
-  Tracked markets ({digest.tracked_count})
+  Other tracked markets ({digest.tracked_count})
 </h2>
 <table style="{table_style}">
   <thead>
@@ -178,11 +235,7 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
 </table>
 """
     else:
-        tracked_section = (
-            '<h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;'
-            'margin-top:32px">Tracked markets (0)</h2>'
-            '<p style="color:#888">No tracked markets found.</p>'
-        )
+        tracked_section = ""
 
     footer = (
         f'<p style="margin-top:32px;font-size:0.8em;color:#aaa">'
@@ -200,6 +253,7 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
     Daily prediction-market digest · {digest.generated_for}
   </p>
 {movers_section}
+{matrix_section}
 {divergence_section}
 {tracked_section}
 {footer}
@@ -237,6 +291,19 @@ def _render_text(digest: MarketDigest, subject: str) -> str:
         lines.append(f"  No tracked outcomes moved ≥ {_pct(digest.mover_threshold)} today.")
     lines.append("")
 
+    # Rate-decision probabilities by source (Cut / Hold / Raise)
+    if digest.meeting_matrices:
+        lines.append("RATE-DECISION PROBABILITIES BY SOURCE (Cut / Hold / Raise)")
+        lines.append("-" * 60)
+        lines.append(f"  {'Meeting':<9} {'Source':<11} {'Cut':>6} {'Hold':>6} {'Raise':>6}")
+        for matrix in digest.meeting_matrices:
+            for r in matrix.rows:
+                lines.append(
+                    f"  {matrix.meeting:<9} {r.source:<11} "
+                    f"{_pct(r.cut):>6} {_pct(r.hold):>6} {_pct(r.raise_):>6}"
+                )
+            lines.append("")  # blank line between meetings
+
     # Relative value vs Fed funds futures (material gaps only)
     material_divs = [d for d in digest.divergences if d.material]
     if material_divs:
@@ -252,19 +319,17 @@ def _render_text(digest: MarketDigest, subject: str) -> str:
             )
         lines.append("")
 
-    # Tracked markets
-    lines.append(f"TRACKED MARKETS ({digest.tracked_count})")
-    lines.append("-" * 60)
+    # Other tracked markets (non cut/hold/raise)
     if digest.tracked:
+        lines.append(f"OTHER TRACKED MARKETS ({digest.tracked_count})")
+        lines.append("-" * 60)
         for tm in digest.tracked:
             outcome_str = "  ".join(
                 f"{o.outcome}: {_pct(o.probability)}" for o in tm.outcomes
             )
             lines.append(f"  [{tm.venue}] {tm.event_title}")
             lines.append(f"    {outcome_str}")
-    else:
-        lines.append("  No tracked markets found.")
-    lines.append("")
+        lines.append("")
     lines.append("Decision-support data only. Not financial advice.")
     return "\n".join(lines)
 

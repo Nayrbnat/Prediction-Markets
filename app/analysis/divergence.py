@@ -55,6 +55,34 @@ def canonical_outcome(label: str) -> str | None:
     return _CANONICAL.get(" ".join(label.lower().split()))
 
 
+_CUT_BUCKETS = {"50+ bps cut", "25 bps cut"}
+_HIKE_BUCKETS = {"25 bps hike", "50+ bps hike"}
+
+
+def cut_hold_raise(
+    pairs: list[tuple[str, Decimal]],
+) -> tuple[Decimal, Decimal, Decimal] | None:
+    """Collapse a market's (outcome, probability) pairs into (cut, hold, raise) sums.
+
+    Cut = all cut sizes; Hold = no change; Raise = all hike sizes. Returns None when
+    none of the outcomes map to the Fed schema (e.g. a 'number of dissents' market).
+    """
+    cut = hold = hike = Decimal(0)
+    mapped = False
+    for outcome, prob in pairs:
+        canon = canonical_outcome(outcome)
+        if canon is None:
+            continue
+        mapped = True
+        if canon in _CUT_BUCKETS:
+            cut += prob
+        elif canon in _HIKE_BUCKETS:
+            hike += prob
+        else:  # "No change"
+            hold += prob
+    return (cut, hold, hike) if mapped else None
+
+
 @dataclass
 class _Market:
     venue: str

@@ -55,12 +55,33 @@ class DivergenceItem(BaseModel):
     close_date: datetime | None = None
 
 
+class SourceProbs(BaseModel):
+    """One source's cut/hold/raise probabilities for a single FOMC meeting."""
+
+    source: str  # display label: "Polymarket" | "Kalshi" | "Futures"
+    venue: str  # raw venue: polymarket | kalshi | cme
+    cut: Decimal = Field(ge=0, le=1)
+    hold: Decimal = Field(ge=0, le=1)
+    raise_: Decimal = Field(ge=0, le=1, alias="raise")  # 'raise' is a keyword
+
+    model_config = {"populate_by_name": True}
+
+
+class MeetingMatrix(BaseModel):
+    """One FOMC meeting with each source's cut/hold/raise row (for side-by-side compare)."""
+
+    meeting: str  # e.g. "Sep 2026"
+    close_date: datetime | None = None
+    rows: list[SourceProbs] = Field(default_factory=list)
+
+
 class MarketDigest(BaseModel):
     """The full daily digest payload — movers + current state of tracked markets."""
 
     generated_for: date
     mover_threshold: Decimal
     movers: list[MoverItem] = Field(default_factory=list)
+    meeting_matrices: list[MeetingMatrix] = Field(default_factory=list)
     tracked: list[TrackedMarket] = Field(default_factory=list)
     divergences: list[DivergenceItem] = Field(default_factory=list)
     mover_count: int = 0

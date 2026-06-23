@@ -13,8 +13,10 @@ from app.config import Settings
 from app.models.digest import (
     DivergenceItem,
     MarketDigest,
+    MeetingMatrix,
     MoverItem,
     OutcomeProb,
+    SourceProbs,
     TrackedMarket,
 )
 from app.models.domain import MarketObservation
@@ -206,6 +208,61 @@ async def test_build_digest_populates_divergences() -> None:
     assert item.material is True
 
 
+async def test_build_digest_builds_cut_hold_raise_matrix() -> None:
+    """cme + polymarket + kalshi for one meeting -> one matrix, 3 source rows; an
+    unmapped market falls back to the generic tracked list."""
+    repo = InMemoryMarketRepository()
+    settings = _settings()
+    close = datetime(2026, 9, 16, tzinfo=timezone.utc)
+
+    def _o(venue: str, mk: str, outcome: str, prob: str) -> MarketObservation:
+        return MarketObservation(
+            venue=venue, market_key=mk, outcome=outcome,
+            event_title="Fed decision in September 2026", topic="fed",
+            probability=Decimal(prob), raw_price=Decimal(prob),
+            tracked=True, priority="high", close_date=close,
+        )
+
+    await repo.seed(
+        [
+            # Polymarket: 5% cut, 73% hold, 22% raise
+            _o("polymarket", "pm", "25 bps decrease", "0.05"),
+            _o("polymarket", "pm", "No change", "0.73"),
+            _o("polymarket", "pm", "25 bps increase", "0.22"),
+            # Kalshi
+            _o("kalshi", "k", "Cut 25bps", "0.06"),
+            _o("kalshi", "k", "Fed maintains rate", "0.74"),
+            _o("kalshi", "k", "Hike 25bps", "0.20"),
+            # Futures (cme)
+            _o("cme", "FOMC-2026-09-16", "No change", "0.64"),
+            _o("cme", "FOMC-2026-09-16", "25 bps hike", "0.36"),
+            # Unmapped market (number of dissents) -> generic tracked
+            _o("polymarket", "dissents", "0", "0.60"),
+            _o("polymarket", "dissents", "1", "0.40"),
+        ],
+        snapshot_date=TODAY,
+    )
+
+    digest = await build_digest(repo, settings)
+
+    assert len(digest.meeting_matrices) == 1
+    matrix = digest.meeting_matrices[0]
+    assert matrix.meeting == "Sep 2026"
+    # Three sources, ordered Polymarket, Kalshi, Futures
+    assert [r.source for r in matrix.rows] == ["Polymarket", "Kalshi", "Futures"]
+    pm = matrix.rows[0]
+    assert pm.cut == Decimal("0.05")
+    assert pm.hold == Decimal("0.73")
+    assert pm.raise_ == Decimal("0.22")
+    fut = matrix.rows[2]
+    assert fut.cut == Decimal("0")
+    assert fut.hold == Decimal("0.64")
+    assert fut.raise_ == Decimal("0.36")
+    # The dissents market is not cut/hold/raise -> generic tracked list.
+    assert digest.tracked_count == 1
+    assert digest.tracked[0].market_key == "dissents"
+
+
 # ---------------------------------------------------------------------------
 # render_digest (pure)
 # ---------------------------------------------------------------------------
@@ -312,6 +369,37 @@ def test_render_no_movers_section() -> None:
     _, html, text = render_digest(digest)
     assert "0" in html
     assert "No tracked outcomes" in html
+
+
+def test_render_matrix_section_three_sources() -> None:
+    digest = MarketDigest(
+        generated_for=TODAY,
+        mover_threshold=Decimal("0.10"),
+        meeting_matrices=[
+            MeetingMatrix(
+                meeting="Sep 2026",
+                close_date=datetime(2026, 9, 16, tzinfo=timezone.utc),
+                rows=[
+                    SourceProbs(source="Polymarket", venue="polymarket",
+                                cut=Decimal("0.05"), hold=Decimal("0.73"), raise_=Decimal("0.22")),
+                    SourceProbs(source="Kalshi", venue="kalshi",
+                                cut=Decimal("0.06"), hold=Decimal("0.74"), raise_=Decimal("0.20")),
+                    SourceProbs(source="Futures", venue="cme",
+                                cut=Decimal("0.0"), hold=Decimal("0.64"), raise_=Decimal("0.36")),
+                ],
+            )
+        ],
+    )
+    _, html, text = render_digest(digest)
+    for body in (html, text):
+        assert "probabilities by source" in body.lower()
+        assert "Sep 2026" in body
+        for src in ("Polymarket", "Kalshi", "Futures"):
+            assert src in body
+        # cut/hold/raise headers and a couple of values
+        assert "Cut" in body and "Hold" in body and "Raise" in body
+        assert "73.0%" in body  # polymarket hold
+        assert "36.0%" in body  # futures raise
 
 
 def test_render_divergence_section_present_for_material_gap() -> None:
