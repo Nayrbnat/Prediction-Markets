@@ -20,6 +20,7 @@ _BINARY_EVENT = {
             "id": "E1",
             "title": "Fed decision in March",
             "negRisk": False,
+            "openInterest": "838095",
             "markets": [
                 {
                     "conditionId": "0xabc",
@@ -30,6 +31,9 @@ _BINARY_EVENT = {
                     "closed": False,
                     "volume": "5000",
                     "liquidity": "2000",
+                    "bestBid": "0.61",
+                    "bestAsk": "0.63",
+                    "lastTradePrice": "0.62",
                 }
             ],
         }
@@ -129,3 +133,75 @@ async def test_429_exhausts_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         async with make_client(base_url=BASE) as client:
             with pytest.raises(RateLimitError):
                 await gamma.discover(client, "fed")
+
+
+# ---------------------------------------------------------------------------
+# Binary complement + event OI fixes
+# ---------------------------------------------------------------------------
+
+async def test_binary_ref_no_side_bid_ask_last_are_complements() -> None:
+    """No-side bid/ask/last must be the complement of Yes-side ask/bid/last."""
+    async with respx.mock:
+        respx.get(f"{BASE}/public-search").mock(return_value=Response(200, json=_BINARY_EVENT))
+        async with make_client(base_url=BASE) as client:
+            refs = await gamma.discover(client, "fed")
+    ref = refs[0]
+    # Yes side
+    assert ref.best_bids[0] == Decimal("0.61")
+    assert ref.best_asks[0] == Decimal("0.63")
+    assert ref.last_trades[0] == Decimal("0.62")
+    # No side: complement identity (no_bid = 1−yes_ask, no_ask = 1−yes_bid, no_last = 1−yes_last)
+    assert ref.best_bids[1] == Decimal("0.370000")   # 1 − 0.63
+    assert ref.best_asks[1] == Decimal("0.390000")   # 1 − 0.61
+    assert ref.last_trades[1] == Decimal("0.380000")  # 1 − 0.62
+
+
+async def test_binary_ref_open_interest_threaded_from_event() -> None:
+    """Event-level openInterest must be broadcast to all outcomes of a binary ref."""
+    async with respx.mock:
+        respx.get(f"{BASE}/public-search").mock(return_value=Response(200, json=_BINARY_EVENT))
+        async with make_client(base_url=BASE) as client:
+            refs = await gamma.discover(client, "fed")
+    ref = refs[0]
+    assert ref.open_interests == [Decimal("838095"), Decimal("838095")]
+
+
+async def test_binary_ref_no_side_null_when_yes_bid_is_none() -> None:
+    """If Yes bid is absent, No ask must remain None — no fabrication."""
+    event = {
+        "events": [{
+            "id": "E2", "title": "t", "negRisk": False, "openInterest": "100",
+            "markets": [{
+                "conditionId": "0xdef",
+                "outcomes": '["Yes","No"]',
+                "outcomePrices": '["0.5","0.5"]',
+                "clobTokenIds": '["1","2"]',
+                "enableOrderBook": True,
+                "closed": False,
+                # bestBid absent; bestAsk present
+                "bestAsk": "0.52",
+                "lastTradePrice": "0.51",
+            }],
+        }]
+    }
+    async with respx.mock:
+        respx.get(f"{BASE}/public-search").mock(return_value=Response(200, json=event))
+        async with make_client(base_url=BASE) as client:
+            refs = await gamma.discover(client, "t")
+    ref = refs[0]
+    assert ref.best_bids[0] is None        # Yes bid absent
+    assert ref.best_asks[1] is None        # No ask = 1−yes_bid — but yes_bid is None → None
+    assert ref.best_bids[1] == Decimal("0.480000")   # No bid = 1−yes_ask = 1−0.52
+
+
+async def test_multi_outcome_ref_not_complemented() -> None:
+    """Multi-outcome (negRisk) candidates are independent; bid/ask must NOT be complemented."""
+    async with respx.mock:
+        respx.get(f"{BASE}/public-search").mock(return_value=Response(200, json=_MULTI_EVENT))
+        async with make_client(base_url=BASE) as client:
+            refs = await gamma.discover(client, "world cup")
+    ref = refs[0]
+    # All bid/ask slots are None (no bestBid/bestAsk in _MULTI_EVENT fixture)
+    # and must NOT be replaced by complements of each other.
+    assert all(b is None for b in ref.best_bids)
+    assert all(a is None for a in ref.best_asks)

@@ -18,17 +18,23 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from app.analysis.probability import complement
 from app.core.errors import SchemaDriftError
 from app.core.http import fetch_json
 from app.core.logging import get_logger
 from app.core.rate_limit import AsyncRateLimiter
 from app.models.domain import MarketRef
+from app.sources._util import parse_iso_datetime
 
 logger = get_logger(__name__)
 
 VENUE = "kalshi"
 _limiter = AsyncRateLimiter(rate_per_sec=8.0)
-_TERMINAL_STATUS = {"closed", "settled", "determined", "finalized", "inactive"}
+# Official market status enum (docs.kalshi.com get-markets): initialized, inactive,
+# active, closed, determined, disputed, amended, finalized. Only "active" is open and
+# tradeable (the /events status=open filter returns markets as "active"); everything
+# else is pre-trade or terminal and must not be ingested as a live observation.
+_ACTIVE_STATUS = "active"
 _MAX_AUTO_SERIES = 5
 
 
@@ -56,7 +62,7 @@ def _yes_price(market: dict) -> Decimal | None:
 
 
 def _is_active(market: dict) -> bool:
-    return str(market.get("status", "")) not in _TERMINAL_STATUS
+    return str(market.get("status", "")) == _ACTIVE_STATUS
 
 
 def _event_volume(markets: list[dict]) -> Decimal | None:
@@ -68,6 +74,10 @@ def _event_volume(markets: list[dict]) -> Decimal | None:
     return sum(vols, Decimal(0)) if vols else None
 
 
+# Kalshi `liquidity_dollars` is DEPRECATED per official docs ("will always return
+# '0.0000'"), so it carries no signal. We store NULL rather than a misleading 0.
+
+
 def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
     markets = [m for m in event.get("markets", []) or [] if isinstance(m, dict)]
     active = [m for m in markets if _is_active(m)]
@@ -75,16 +85,36 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
         return []
     event_ticker = str(event.get("event_ticker", ""))
     event_title = str(event.get("title") or event.get("sub_title") or topic)
+    event_category: str | None = event.get("category") or None
+    # close_time lives on each nested market (not the event). In a mutually-exclusive
+    # event all candidates resolve together, so take it from the first active market
+    # and broadcast it to all outcomes.
+    close_date = parse_iso_datetime(active[0].get("close_time"))
 
     if bool(event.get("mutually_exclusive", False)) and len(active) > 1:
         outcomes: list[str] = []
         prices: list[Decimal] = []
+        best_bids: list[Decimal | None] = []
+        best_asks: list[Decimal | None] = []
+        last_trades: list[Decimal | None] = []
+        vols_24h: list[Decimal | None] = []
+        vols_total: list[Decimal | None] = []
+        open_interests: list[Decimal | None] = []
+
         for m in active:
             yes = _yes_price(m)
             if yes is None:
                 continue
             outcomes.append(str(m.get("yes_sub_title") or m.get("ticker")))
             prices.append(yes)
+            # Each candidate: yes_* fields are the per-outcome bid/ask/last.
+            best_bids.append(_money(m.get("yes_bid_dollars")))
+            best_asks.append(_money(m.get("yes_ask_dollars")))
+            last_trades.append(_money(m.get("last_price_dollars")))
+            vols_24h.append(_money(m.get("volume_24h_fp")))
+            vols_total.append(_money(m.get("volume_fp")))
+            open_interests.append(_money(m.get("open_interest_fp")))
+
         if not outcomes:
             return []
         return [
@@ -96,8 +126,17 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 outcomes=outcomes,
                 resolved=False,
                 volume=_event_volume(active),
+                liquidity=None,  # deprecated upstream (always 0.0000) — store NULL
+                category=event_category,
                 topic=topic,
                 quoted_prices=prices,
+                best_bids=best_bids,
+                best_asks=best_asks,
+                last_trades=last_trades,
+                outcome_volumes_24h=vols_24h,
+                outcome_volumes_total=vols_total,
+                open_interests=open_interests,
+                close_date=close_date,
             )
         ]
 
@@ -111,6 +150,17 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
         if yes is None:
             continue
         label = str(m.get("yes_sub_title") or "Yes")
+
+        # For binary Yes/No: yes_* → outcome[0] (Yes), no_* → outcome[1] (No).
+        yes_bid = _money(m.get("yes_bid_dollars"))
+        yes_ask = _money(m.get("yes_ask_dollars"))
+        no_bid = _money(m.get("no_bid_dollars"))
+        no_ask = _money(m.get("no_ask_dollars"))
+        last = _money(m.get("last_price_dollars"))
+        vol_24h = _money(m.get("volume_24h_fp"))
+        vol_total = _money(m.get("volume_fp"))
+        oi = _money(m.get("open_interest_fp"))
+
         refs.append(
             MarketRef(
                 venue=VENUE,
@@ -119,9 +169,19 @@ def _event_to_refs(event: dict, *, topic: str) -> list[MarketRef]:
                 event_title=event_title,
                 outcomes=[label, "No"],
                 resolved=False,
-                volume=_money(m.get("volume_24h_fp")) or _money(m.get("volume_fp")),
+                volume=vol_24h or vol_total,
+                liquidity=None,  # deprecated upstream (always 0.0000) — store NULL
+                category=event_category,
                 topic=topic,
                 quoted_prices=[yes, Decimal(1) - yes],
+                best_bids=[yes_bid, no_bid],
+                best_asks=[yes_ask, no_ask],
+                # No last = 1 − yes last (binary complement identity)
+                last_trades=[last, complement(last) if last is not None else None],
+                outcome_volumes_24h=[vol_24h, vol_24h],  # market-level, shared
+                outcome_volumes_total=[vol_total, vol_total],
+                open_interests=[oi, oi],  # market-level OI shared across Yes/No
+                close_date=close_date,
             )
         )
     return refs

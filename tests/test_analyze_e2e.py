@@ -1,8 +1,5 @@
 """End-to-end /analyze through HTTP with the repo seeded, exercising the
 Kalshi-no-match degradation path (store-only read path).
-
-The read path no longer calls the gateway; it serves exclusively from the ingested
-store. Venue availability reflects what is in the DB, not what the gateway would return.
 """
 
 from __future__ import annotations
@@ -21,28 +18,27 @@ def test_e2e_analyze_polymarket_only_degradation() -> None:
     """Store has only Polymarket data -> Kalshi shows as unmatched, degradation note present."""
     app = create_app()
     repo = InMemoryMarketRepository()
-    # Seed the store with Polymarket observations only.
     asyncio.run(
-        repo.upsert_observations(
+        repo.seed(
             [
                 MarketObservation(
                     venue="polymarket", market_key="m1", outcome="Yes",
                     event_title="Fed decision in March", topic="fed rate decision",
                     probability=Decimal("0.62"), raw_price=Decimal("0.62"),
-                    volume=Decimal("5000"),
+                    volume_24h=Decimal("5000"),
                 ),
                 MarketObservation(
                     venue="polymarket", market_key="m1", outcome="No",
                     event_title="Fed decision in March", topic="fed rate decision",
                     probability=Decimal("0.38"), raw_price=Decimal("0.38"),
-                    volume=Decimal("5000"),
+                    volume_24h=Decimal("5000"),
                 ),
             ]
         )
     )
 
     with TestClient(app) as client:
-        app.state.gateway = FakeGateway()  # not called on the read path
+        app.state.gateway = FakeGateway()
         app.state.repo = repo
         resp = client.post("/analyze", json={"topic": "fed rate decision"})
 

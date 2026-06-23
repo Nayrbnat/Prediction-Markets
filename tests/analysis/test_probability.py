@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.analysis.probability import assess_confidence, implied_probability, mid_price
+from app.analysis.probability import (
+    assess_confidence,
+    complement,
+    implied_probability,
+    mid_price,
+    q6,
+)
 from app.models.domain import OrderBookTop
 from app.models.provenance import Provenance
 
@@ -80,3 +86,26 @@ def test_implied_probability_none_without_mid() -> None:
         thin_spread=THIN_SPREAD, thin_volume=THIN_VOLUME,
     )
     assert op is None
+
+
+# ---------------------------------------------------------------------------
+# complement() helper
+# ---------------------------------------------------------------------------
+
+def test_complement_quantizes_to_6dp() -> None:
+    # 1 − 0.62 = 0.38, exact, 6 dp
+    assert complement(Decimal("0.62")) == Decimal("0.380000")
+
+
+def test_complement_round_trips_with_q6() -> None:
+    # complement(complement(x)) == q6(x) for any x in [0,1]
+    x = Decimal("0.372819")
+    assert complement(complement(x)) == q6(x)
+
+
+def test_complement_of_zero_is_one() -> None:
+    assert complement(Decimal("0")) == Decimal("1.000000")
+
+
+def test_complement_of_one_is_zero() -> None:
+    assert complement(Decimal("1")) == Decimal("0.000000")

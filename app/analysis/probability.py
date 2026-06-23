@@ -7,10 +7,25 @@ the source). This layer is venue-agnostic and pure.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.models.domain import OrderBookTop, OutcomeProbability
 from app.models.provenance import ConfidenceFlag, Provenance
+
+
+def q6(x: Decimal) -> Decimal:
+    """Quantize to 6 decimal places (ROUND_HALF_UP). Pure."""
+    return x.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
+def complement(x: Decimal) -> Decimal:
+    """Return the probability complement (1 − x), quantized to 6 dp. Pure.
+
+    Used exclusively for **binary** complementary outcome pairs (e.g. Yes/No)
+    where the No side is the financial identity of 1 − Yes.  Never apply to
+    multi-outcome independent candidates.
+    """
+    return q6(Decimal(1) - x)
 
 
 def mid_price(book: OrderBookTop) -> Decimal | None:
@@ -52,8 +67,8 @@ def implied_probability(
         return None
     return OutcomeProbability(
         outcome=outcome,
-        probability=mid,
-        raw_price=mid,
+        probability=q6(mid),
+        raw_price=q6(mid),
         provenance=provenance,
         confidence=assess_confidence(
             spread=book.spread, volume=volume, thin_spread=thin_spread, thin_volume=thin_volume
@@ -75,8 +90,8 @@ def probability_from_price(
     ``outcomePrices``) when no full order book is fetched."""
     return OutcomeProbability(
         outcome=outcome,
-        probability=price,
-        raw_price=price,
+        probability=q6(price),
+        raw_price=q6(price),
         provenance=provenance,
         confidence=assess_confidence(
             spread=spread, volume=volume, thin_spread=thin_spread, thin_volume=thin_volume

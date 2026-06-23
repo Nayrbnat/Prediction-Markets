@@ -31,6 +31,9 @@ class MarketRef(BaseModel):
     condition_id: str | None = None
     resolved: bool = False
     enable_order_book: bool = True
+    # Aggregate market volume used for the thin-market confidence flag in
+    # assess_confidence(); per-outcome volumes live in outcome_volumes_24h /
+    # outcome_volumes_total.
     volume: Decimal | None = None
     liquidity: Decimal | None = None
     topic: str | None = None
@@ -39,6 +42,16 @@ class MarketRef(BaseModel):
         default=None,
         description="Quick-read price per outcome (0..1), aligned to `outcomes`, from discovery.",
     )
+    # Per-outcome parallel arrays (aligned to outcomes[]).  NULL means the venue
+    # did not expose that value for the given outcome side — never fabricated.
+    best_bids: list[Decimal | None] | None = None
+    best_asks: list[Decimal | None] | None = None
+    last_trades: list[Decimal | None] | None = None
+    outcome_volumes_24h: list[Decimal | None] | None = None
+    outcome_volumes_total: list[Decimal | None] | None = None
+    open_interests: list[Decimal | None] | None = None
+    # Resolution date (market-level, same for all outcomes in the same market).
+    close_date: datetime | None = None
 
 
 class OrderBookTop(BaseModel):
@@ -60,6 +73,14 @@ class OutcomeProbability(BaseModel):
     raw_price: Decimal
     provenance: Provenance
     confidence: ConfidenceFlag = Field(default_factory=ConfidenceFlag)
+    # Market microstructure fields — NULL when not available for this outcome/side.
+    best_bid: Decimal | None = None
+    best_ask: Decimal | None = None
+    spread: Decimal | None = None
+    last_trade_price: Decimal | None = None
+    volume_24h: Decimal | None = None
+    volume_total: Decimal | None = None
+    open_interest: Decimal | None = None
 
 
 class EventDistribution(BaseModel):
@@ -75,7 +96,11 @@ class EventDistribution(BaseModel):
 
 
 class MarketObservation(BaseModel):
-    """The persisted row shape (one per venue/market_key/outcome)."""
+    """The persisted row shape (one per venue/market_key/outcome).
+
+    Used by pricing helpers (distribution_from_observations, ref_from_observations)
+    and by ingestion (observations_from_distribution).
+    """
 
     venue: Venue
     market_key: str
@@ -87,8 +112,15 @@ class MarketObservation(BaseModel):
     previous_probability: Decimal | None = None
     probability_delta: Decimal | None = None
     raw_price: Decimal
-    volume: Decimal | None = None
+    volume_24h: Decimal | None = None
+    volume_total: Decimal | None = None
     liquidity: Decimal | None = None
+    close_date: datetime | None = None
+    best_bid: Decimal | None = None
+    best_ask: Decimal | None = None
+    spread: Decimal | None = None
+    last_trade_price: Decimal | None = None
+    open_interest: Decimal | None = None
     confidence: str = "ok"
     priority: Priority = "normal"
     tracked: bool = False
