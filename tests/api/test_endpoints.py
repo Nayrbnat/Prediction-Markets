@@ -21,34 +21,91 @@ def _poly_ref() -> MarketRef:
     )
 
 
-def test_analyze_endpoint_live() -> None:
+def test_analyze_endpoint_with_store_data() -> None:
+    """analyze returns store data (stale=True) when the repo has rows."""
     app = create_app()
+    repo = InMemoryMarketRepository()
+    asyncio.run(
+        repo.seed(
+            [
+                MarketObservation(
+                    venue="polymarket", market_key="m1", outcome="Yes",
+                    event_title="Fed decision", topic="fed",
+                    probability=Decimal("0.62"), raw_price=Decimal("0.62"),
+                )
+            ]
+        )
+    )
     with TestClient(app) as client:
-        app.state.gateway = FakeGateway(refs_by_topic={"fed": [_poly_ref()]})
-        app.state.repo = InMemoryMarketRepository()
+        app.state.gateway = FakeGateway()
+        app.state.repo = repo
         resp = client.post("/analyze", json={"topic": "fed"})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["stale"] is False
+    assert body["stale"] is True
     assert len(body["distributions"]) == 1
     assert body["llm_synthesis"] is None
     assert body["disclaimer"]
 
 
-def test_markets_search_endpoint() -> None:
+def test_analyze_endpoint_no_data_returns_note() -> None:
+    """analyze returns an empty response with a note when the store has no rows."""
     app = create_app()
     with TestClient(app) as client:
-        app.state.gateway = FakeGateway(refs_by_topic={"fed": [_poly_ref()]})
+        app.state.gateway = FakeGateway()
+        app.state.repo = InMemoryMarketRepository()
+        resp = client.post("/analyze", json={"topic": "ghost"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["distributions"] == []
+    assert any("no ingested data" in n for n in body["notes"])
+
+
+def test_markets_search_endpoint() -> None:
+    """search reads from the DB repo — seed it and assert results."""
+    app = create_app()
+    repo = InMemoryMarketRepository()
+    asyncio.run(
+        repo.seed(
+            [
+                MarketObservation(
+                    venue="polymarket", market_key="m1", outcome="Yes",
+                    event_title="Fed decision", topic="fed",
+                    probability=Decimal("0.62"), raw_price=Decimal("0.62"),
+                ),
+                MarketObservation(
+                    venue="polymarket", market_key="m1", outcome="No",
+                    event_title="Fed decision", topic="fed",
+                    probability=Decimal("0.38"), raw_price=Decimal("0.38"),
+                ),
+            ]
+        )
+    )
+    with TestClient(app) as client:
+        app.state.gateway = FakeGateway()
+        app.state.repo = repo
         resp = client.get("/markets/search", params={"q": "fed"})
     assert resp.status_code == 200
+    # One MarketRef per market (both outcomes grouped under m1)
     assert len(resp.json()) == 1
+    assert resp.json()[0]["market_key"] == "m1"
+
+
+def test_markets_search_no_match_returns_empty() -> None:
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.gateway = FakeGateway()
+        app.state.repo = InMemoryMarketRepository()
+        resp = client.get("/markets/search", params={"q": "zzznomatch"})
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 def test_market_detail_endpoint() -> None:
     app = create_app()
     repo = InMemoryMarketRepository()
     asyncio.run(
-        repo.upsert_observations(
+        repo.seed(
             [
                 MarketObservation(
                     venue="polymarket", market_key="m1", outcome="Yes",

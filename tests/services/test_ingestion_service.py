@@ -1,4 +1,4 @@
-"""Service tests for the ingestion run: upsert, change detection, idempotence."""
+"""Service tests for the ingestion run: write_snapshots, topic mapping, idempotence."""
 
 from __future__ import annotations
 
@@ -22,35 +22,36 @@ def _ref(yes: str, no: str) -> MarketRef:
     )
 
 
-async def test_first_run_upserts_no_changes() -> None:
+async def test_first_run_writes_snapshots() -> None:
     repo = InMemoryMarketRepository()
     gw = FakeGateway(refs_by_topic={"fed": [_ref("0.62", "0.38")]})
     result = await run_ingestion(repo=repo, gateway=gw, settings=_settings())
-    assert result.markets == 2
-    assert result.changes == 0  # no previous observation yet
-    assert len(repo.changelog) == 0
+    assert result.markets == 2  # 2 outcomes deduped and written
+    assert result.changes == 0
+    # Snapshots written
+    assert len(repo.snapshots) == 2
+    # Run recorded as ok
+    assert repo.runs[-1]["status"] == "ok"
+    assert repo.refresh_count == 1
 
 
-async def test_second_run_logs_material_change() -> None:
+async def test_same_day_rerun_is_idempotent() -> None:
+    """Running ingestion twice on the same day yields the same snapshot count."""
     repo = InMemoryMarketRepository()
     settings = _settings()
     gw = FakeGateway(refs_by_topic={"fed": [_ref("0.62", "0.38")]})
     await run_ingestion(repo=repo, gateway=gw, settings=settings)
+    snapshot_count_after_first = len(repo.snapshots)
 
-    gw.refs["fed"] = [_ref("0.70", "0.30")]  # Yes +0.08, No -0.08 -> both material
-    result = await run_ingestion(repo=repo, gateway=gw, settings=settings)
-    assert result.changes == 2
-    assert len(repo.changelog) == 2
-    stored = {o.outcome: o for o in await repo.read_topic("fed")}
-    assert stored["Yes"].probability == Decimal("0.70")
-    assert stored["Yes"].previous_probability == Decimal("0.62")
-
-
-async def test_untracked_topic_writes_no_changelog() -> None:
-    repo = InMemoryMarketRepository()
-    settings = Settings(database_url="", ingest_topics="fed", high_priority_topics="")
-    gw = FakeGateway(refs_by_topic={"fed": [_ref("0.62", "0.38")]})
+    # Same price — idempotent
     await run_ingestion(repo=repo, gateway=gw, settings=settings)
-    gw.refs["fed"] = [_ref("0.90", "0.10")]
-    result = await run_ingestion(repo=repo, gateway=gw, settings=settings)
-    assert result.changes == 0  # not tracked -> never logged
+    assert len(repo.snapshots) == snapshot_count_after_first
+
+
+async def test_topic_pairs_written() -> None:
+    """Topic-to-market mappings are persisted after ingestion."""
+    repo = InMemoryMarketRepository()
+    gw = FakeGateway(refs_by_topic={"fed": [_ref("0.62", "0.38")]})
+    await run_ingestion(repo=repo, gateway=gw, settings=_settings())
+    # (polymarket, m1, fed) should be in topic_pairs
+    assert ("polymarket", "m1", "fed") in repo.topic_pairs

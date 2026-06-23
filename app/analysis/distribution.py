@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from app.analysis.probability import q6
 from app.models.domain import EventDistribution, OutcomeProbability
 from app.models.provenance import Venue
 
@@ -38,7 +39,7 @@ def normalise_distribution(
     for o in outcomes:
         prov = o.provenance.model_copy(update={"normalisation_factor": raw_sum})
         normalised.append(
-            o.model_copy(update={"probability": o.probability / raw_sum, "provenance": prov})
+            o.model_copy(update={"probability": q6(o.probability / raw_sum), "provenance": prov})
         )
 
     return EventDistribution(
