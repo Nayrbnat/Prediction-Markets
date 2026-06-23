@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from app.analysis.divergence import compare as compare_divergences
 from app.config import Settings
 from app.core.logging import get_logger
 from app.models.digest import MarketDigest, OutcomeProb, TrackedMarket
@@ -67,20 +68,31 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
     # Step 3: group into TrackedMarket objects
     tracked = _group_tracked(tracked_obs)
 
-    # Step 4: assemble
+    # Step 4: relative value — market vs Fed-funds-futures-implied, same meeting.
+    # Reuses the tracked observations (which include the `cme` venue) — no extra read.
+    divergences = compare_divergences(tracked_obs, gap_threshold=settings.rv_gap_threshold)
+    material = sum(1 for d in divergences if d.material)
+    logger.info(
+        "digest.divergences", extra={"total": len(divergences), "material": material}
+    )
+
+    # Step 5: assemble
     digest = MarketDigest(
         generated_for=generated_for,
         mover_threshold=settings.mover_threshold,
         movers=movers,
         tracked=tracked,
+        divergences=divergences,
         mover_count=len(movers),
         tracked_count=len(tracked),
+        divergence_count=material,
     )
     logger.info(
         "digest.assembled",
         extra={
             "mover_count": digest.mover_count,
             "tracked_count": digest.tracked_count,
+            "divergence_count": digest.divergence_count,
             "generated_for": str(generated_for),
         },
     )

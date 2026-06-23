@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.models.digest import MarketDigest, MoverItem, TrackedMarket
+from app.models.digest import DivergenceItem, MarketDigest, MoverItem, TrackedMarket
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -45,6 +45,21 @@ def _render_mover_html(m: MoverItem) -> str:
         f'{_signed_pp(m.delta)}</td>'
         f'<td style="padding:4px 8px;color:#888;font-size:0.9em">'
         f'{m.venue}{close}</td>'
+        f'</tr>'
+    )
+
+
+def _render_divergence_html(d: DivergenceItem) -> str:
+    colour = _mover_colour(d.gap)
+    return (
+        f'<tr>'
+        f'<td style="padding:4px 8px;font-weight:bold">{d.meeting}</td>'
+        f'<td style="padding:4px 8px">{d.outcome}</td>'
+        f'<td style="padding:4px 8px">{_pct(d.market_prob)}</td>'
+        f'<td style="padding:4px 8px">{_pct(d.futures_prob)}</td>'
+        f'<td style="padding:4px 8px;color:{colour};font-weight:bold">'
+        f'{_signed_pp(d.gap)}</td>'
+        f'<td style="padding:4px 8px;color:#888;font-size:0.9em">{d.market_venue}</td>'
         f'</tr>'
     )
 
@@ -112,6 +127,36 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
             f'{_pct(digest.mover_threshold)} today.</p>'
         )
 
+    # Relative-value section (market vs Fed-funds-futures-implied) — material gaps only.
+    material_divs = [d for d in digest.divergences if d.material]
+    if material_divs:
+        div_rows = "\n".join(_render_divergence_html(d) for d in material_divs)
+        divergence_section = f"""
+<h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
+  Relative value vs Fed funds futures ({digest.divergence_count})
+  <span style="font-size:0.75em;color:#888;font-weight:normal">
+    — prediction market vs ZQ-implied; a signal to investigate, not arbitrage
+  </span>
+</h2>
+<table style="{table_style}">
+  <thead>
+    <tr>
+      <th style="{th_style}">Meeting</th>
+      <th style="{th_style}">Outcome</th>
+      <th style="{th_style}">Market</th>
+      <th style="{th_style}">Futures</th>
+      <th style="{th_style}">Gap (mkt−fut)</th>
+      <th style="{th_style}">Venue</th>
+    </tr>
+  </thead>
+  <tbody>
+{div_rows}
+  </tbody>
+</table>
+"""
+    else:
+        divergence_section = ""
+
     # Tracked markets section
     if digest.tracked:
         tracked_rows = "\n".join(_render_tracked_html(tm) for tm in digest.tracked)
@@ -155,6 +200,7 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
     Daily prediction-market digest · {digest.generated_for}
   </p>
 {movers_section}
+{divergence_section}
 {tracked_section}
 {footer}
 </div>
@@ -190,6 +236,21 @@ def _render_text(digest: MarketDigest, subject: str) -> str:
     else:
         lines.append(f"  No tracked outcomes moved ≥ {_pct(digest.mover_threshold)} today.")
     lines.append("")
+
+    # Relative value vs Fed funds futures (material gaps only)
+    material_divs = [d for d in digest.divergences if d.material]
+    if material_divs:
+        lines.append(
+            f"RELATIVE VALUE vs FED FUNDS FUTURES ({digest.divergence_count}) "
+            "— prediction market vs ZQ-implied; a signal, not arbitrage"
+        )
+        lines.append("-" * 60)
+        for d in material_divs:
+            lines.append(
+                f"  {d.meeting} — {d.outcome}: market {_pct(d.market_prob)} vs "
+                f"futures {_pct(d.futures_prob)} ({_signed_pp(d.gap)}) [{d.market_venue}]"
+            )
+        lines.append("")
 
     # Tracked markets
     lines.append(f"TRACKED MARKETS ({digest.tracked_count})")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -10,7 +10,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.config import Settings
-from app.models.digest import MarketDigest, MoverItem, OutcomeProb, TrackedMarket
+from app.models.digest import (
+    DivergenceItem,
+    MarketDigest,
+    MoverItem,
+    OutcomeProb,
+    TrackedMarket,
+)
 from app.models.domain import MarketObservation
 from app.services.digest_render import _pct, _signed_pp, render_digest
 from app.services.digest_service import _group_tracked, build_digest
@@ -168,6 +174,38 @@ async def test_build_digest_respects_threshold() -> None:
     assert digest.mover_count == 0
 
 
+async def test_build_digest_populates_divergences() -> None:
+    """A cme + prediction-market pair for the same meeting yields a divergence."""
+    repo = InMemoryMarketRepository()
+    settings = _settings(rv_gap_threshold=Decimal("0.05"))
+    close = datetime(2026, 9, 16, tzinfo=timezone.utc)
+
+    def _d(venue: str, mk: str, outcome: str, prob: str) -> MarketObservation:
+        return MarketObservation(
+            venue=venue, market_key=mk, outcome=outcome,
+            event_title="Fed decision in September 2026", topic="fed",
+            probability=Decimal(prob), raw_price=Decimal(prob),
+            tracked=True, priority="high", close_date=close,
+        )
+
+    await repo.seed(
+        [
+            _d("cme", "FOMC-2026-09-16", "No change", "0.81"),
+            _d("polymarket", "pm-sep", "No change", "0.74"),
+        ],
+        snapshot_date=TODAY,
+    )
+
+    digest = await build_digest(repo, settings)
+    assert digest.divergence_count == 1
+    item = next(d for d in digest.divergences if d.outcome == "No change")
+    assert item.market_venue == "polymarket"
+    assert item.market_prob == Decimal("0.74")
+    assert item.futures_prob == Decimal("0.81")
+    assert item.gap == Decimal("-0.07")
+    assert item.material is True
+
+
 # ---------------------------------------------------------------------------
 # render_digest (pure)
 # ---------------------------------------------------------------------------
@@ -274,6 +312,48 @@ def test_render_no_movers_section() -> None:
     _, html, text = render_digest(digest)
     assert "0" in html
     assert "No tracked outcomes" in html
+
+
+def test_render_divergence_section_present_for_material_gap() -> None:
+    digest = MarketDigest(
+        generated_for=TODAY,
+        mover_threshold=Decimal("0.10"),
+        divergences=[
+            DivergenceItem(
+                meeting="September 2026",
+                market_venue="polymarket",
+                outcome="No change",
+                market_prob=Decimal("0.74"),
+                futures_prob=Decimal("0.81"),
+                gap=Decimal("-0.07"),
+                material=True,
+            )
+        ],
+        divergence_count=1,
+    )
+    _, html, text = render_digest(digest)
+    for body in (html, text):
+        assert "fed funds futures" in body.lower()  # HTML title-case / text upper-case
+        assert "September 2026" in body
+        assert "-7.0pp" in body
+
+
+def test_render_divergence_section_absent_when_no_material_gap() -> None:
+    digest = MarketDigest(
+        generated_for=TODAY,
+        mover_threshold=Decimal("0.10"),
+        divergences=[
+            DivergenceItem(
+                meeting="September 2026", market_venue="kalshi", outcome="No change",
+                market_prob=Decimal("0.80"), futures_prob=Decimal("0.81"),
+                gap=Decimal("-0.01"), material=False,
+            )
+        ],
+        divergence_count=0,
+    )
+    _, html, text = render_digest(digest)
+    assert "fed funds futures" not in html.lower()
+    assert "fed funds futures" not in text.lower()
 
 
 # ---------------------------------------------------------------------------
