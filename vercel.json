@@ -1,12 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "builds": [
-    { "src": "app/main.py", "use": "@vercel/python" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "app/main.py" }
-  ],
+  "functions": {
+    "app/main.py": {
+      "excludeFiles": "{tests/**,**/test_*.py,frontend/**,*.md,docker-compose.yml,Dockerfile}"
+    }
+  },
   "crons": [
-    { "path": "/internal/refresh", "schedule": "0 */2 * * *" }
+    { "path": "/internal/refresh", "schedule": "0 6 * * *" }
   ]
 }

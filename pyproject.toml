@@ -26,6 +26,12 @@ dev = [
 [project.scripts]
 ingest = "app.ingest:main"
 
+[tool.vercel]
+# Vercel's Python runtime loads this ASGI app as the function handler.
+# (app/main.py also matches the auto-detected "main.py inside app/" convention;
+# this makes it explicit and drift-proof.)
+entrypoint = "app.main:app"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
