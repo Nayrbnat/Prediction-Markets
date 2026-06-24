@@ -16,7 +16,7 @@ import calendar
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.analysis.changes import probability_change
@@ -57,16 +57,21 @@ def compare(
     gap_threshold: Decimal,
     strike_step: Decimal = Decimal("1000"),
 ) -> list[ThresholdDivergence]:
-    """Emit signed market−derivative P(above) gaps per (underlying, strike, expiry).
+    """Emit signed market−derivative P(above) gaps per (underlying, strike, EXACT expiry date).
 
-    Only keys that have BOTH a derivative point and a prediction-market point produce
-    items. Sorted by expiry, then |gap| desc.
+    Matching is at exact-date granularity: a price-threshold's value is meaningful only for
+    a specific expiry (BTC at $60k two days apart is a different bet), so a derivative target
+    is only compared to prediction markets resolving on the SAME calendar date and (rounded)
+    strike. Only keys with BOTH a derivative point and a prediction point produce items.
+    Sorted by expiry, then |gap| desc.
     """
     points = [p for obs in observations if (p := parser(obs)) is not None]
 
-    by_key: dict[tuple[str, Decimal, int, int], list[ThresholdPoint]] = defaultdict(list)
+    by_key: dict[tuple[str, Decimal, date], list[ThresholdPoint]] = defaultdict(list)
     for p in points:
-        key = (p.underlying, _round_strike(p.strike, strike_step), p.year, p.month)
+        if p.close_date is None:
+            continue
+        key = (p.underlying, _round_strike(p.strike, strike_step), p.close_date.date())
         by_key[key].append(p)
 
     items: list[ThresholdDivergence] = []
@@ -74,7 +79,10 @@ def compare(
         deriv = next((p for p in pts if p.venue == derivative_venue), None)
         if deriv is None:
             continue
-        expiry_label = f"{calendar.month_abbr[deriv.month]} {deriv.year}"
+        d = deriv.close_date
+        expiry_label = (
+            f"{d.day} {calendar.month_abbr[d.month]} {d.year}" if d is not None else "?"
+        )
         for p in pts:
             if p.venue == derivative_venue:
                 continue

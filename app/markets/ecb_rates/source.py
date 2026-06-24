@@ -1,22 +1,22 @@
-"""1-month €STR futures -> futures-implied ECB Governing Council meeting probabilities.
+"""€STR futures -> futures-implied ECB Governing Council meeting probabilities.
 
-I/O only. This source fetches:
-  - 1-month €STR future settlement/last prices from Yahoo Finance (free, no key), per
-    contract month (symbol ``ESR{monthcode}{YY}.CME``, e.g. Sep 2026 = ``ESRU26.CME``);
-  - the current €STR rate from the ECB SDMX data API.
+I/O only. Fetches €STR future prices from Yahoo (``ESR{monthcode}{YY}.CME``) + the current
+€STR from the ECB SDMX data API, then delegates meeting orchestration to the shared
+``app/markets/_shared/rate_futures`` (pure rate-step math). Emits one ``MarketRef`` per
+upcoming ECB meeting under the ``estr`` venue.
 
-It binds the ECB-specific bits (ESR symbol scheme, €STR source, labels) and delegates the
-meeting orchestration + chaining to the shared ``app/markets/_shared/rate_futures``, which
-uses the pure rate-step math. One ``MarketRef`` per upcoming ECB meeting is emitted, shaped
-like a prediction-market venue (``quoted_prices`` = computed bucket probabilities), flowing
-through the existing pricing -> snapshot -> digest pipeline as the ``estr`` venue.
+⚠️ NOT PRODUCTION-READY — instrument mismatch (verified 2026-06-24, §13):
+``ESR*.CME`` is CME's **THREE-MONTH** €STR future, which settles to the *compounded* €STR
+over a quarterly IMM reference period (3rd Wed -> 3rd Wed +3M). The shared rate-step math
+assumes a **ONE-MONTH** future settling to the *arithmetic average* daily rate over a single
+calendar month (the ZQ/SR1 convention). Feeding a 3-month compounded contract into 1-month
+math is WRONG. To make ECB correct, either (a) source a free 1-month-average €STR future
+(e.g. ICE One-Month €STR) and keep this math, or (b) implement proper 3-month-compounded
+strip math (multiple meetings per quarter). Until then ECB stays disabled (ECB_ENABLED=false)
+and must not be shipped. The €STR rate read (ECB SDMX) and the ECB-markets-on-Polymarket side
+are both confirmed to exist, so only the futures leg is blocked.
 
-There is no order book and no per-trader data — €STR futures contribute a futures-implied
-distribution only. Degrades gracefully: a failed fetch for one meeting is skipped.
-
-§13: the exact ESR Yahoo symbol scheme, the ECB SDMX €STR series path/shape, and the
-1-month €STR future's ``100 - average €STR`` settlement must be confirmed against current
-official docs at build time before enabling — they are not trusted from memory.
+Degrades gracefully: a failed fetch for one meeting is skipped.
 """
 
 from __future__ import annotations

@@ -107,8 +107,9 @@ class Settings(BaseSettings):
     eth_targets: str = ""
 
     # ---- ECB rate decision (€STR futures, relative value) --------------
-    # §13: verify the ESR Yahoo symbol scheme + ECB SDMX series key against live docs
-    # and confirm the 1-month ESTR future settles to the average €STR before enabling.
+    # ⚠️ NOT production-ready: ESR*.CME is CME's 3-month COMPOUNDED €STR future, not the
+    # 1-month-average contract the rate-step math needs (verified 2026-06-24). Keep disabled
+    # until a 1-month €STR feed is sourced (or 3-month strip math is built). See source.py.
     ecb_enabled: bool = False
     ecb_topics: str = "ecb rate decision"  # CSV of topics the ECB source serves
     ecb_meeting_horizon: int = 2  # number of upcoming ECB meetings to price
