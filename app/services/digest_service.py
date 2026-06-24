@@ -20,6 +20,7 @@ from app.markets.ecb_rates.divergence import compare as compare_ecb_divergences
 from app.markets.eth_price.divergence import compare as compare_eth_thresholds
 from app.markets.fed_rates.divergence import canonical_outcome as fed_canonical
 from app.markets.fed_rates.divergence import compare as compare_fed_divergences
+from app.markets.nasdaq_price.divergence import compare as compare_nasdaq_thresholds
 from app.models.digest import (
     MarketDigest,
     MeetingMatrix,
@@ -173,6 +174,7 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
     threshold_divs = [
         *compare_btc_thresholds(tracked_obs, gap_threshold=settings.crypto_gap_threshold),
         *compare_eth_thresholds(tracked_obs, gap_threshold=settings.crypto_gap_threshold),
+        *compare_nasdaq_thresholds(tracked_obs, gap_threshold=settings.crypto_gap_threshold),
     ]
     threshold_material = sum(1 for t in threshold_divs if t.material)
     logger.info(

@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     ecb_meetings: str = ""  # CSV of ISO ECB Governing Council decision dates
     ecb_rates_base_url: str = "https://data-api.ecb.europa.eu"  # ECB SDMX (free) for €STR
 
+    # ---- Equity index thresholds (CBOE options, relative value) --------
+    cboe_base_url: str = "https://cdn.cboe.com"  # free public delayed-quotes options
+    nasdaq_enabled: bool = False
+    nasdaq_topics: str = "nasdaq price"  # CSV of topics the Nasdaq-100 source serves
+    nasdaq_targets: str = ""  # optional "strike@YYMMDD" supplements (dynamic is default)
+
     # ---- Company-bet scan (discovery/listing only, separate 5-day cron) -
     company_scan_enabled: bool = False
     # Kalshi categories to enumerate for company bets (CSV); "Companies" holds the rich set.
@@ -204,6 +210,15 @@ class Settings(BaseSettings):
     def eth_target_list(self) -> list[tuple[Decimal, str]]:
         """Parsed ETH (strike, expiry-token) Deribit targets (skips malformed tokens)."""
         return _targets(self.eth_targets)
+
+    @property
+    def nasdaq_topic_set(self) -> set[str]:
+        return set(_csv(self.nasdaq_topics))
+
+    @property
+    def nasdaq_target_list(self) -> list[tuple[Decimal, str]]:
+        """Parsed Nasdaq-100 (strike, CBOE YYMMDD token) targets (skips malformed)."""
+        return _targets(self.nasdaq_targets)
 
 
 @lru_cache
