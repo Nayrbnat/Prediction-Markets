@@ -5,16 +5,20 @@ I/O only. Fetches €STR future prices from Yahoo (``ESR{monthcode}{YY}.CME``) +
 ``app/markets/_shared/rate_futures`` (pure rate-step math). Emits one ``MarketRef`` per
 upcoming ECB meeting under the ``estr`` venue.
 
-⚠️ NOT PRODUCTION-READY — instrument mismatch (verified 2026-06-24, §13):
-``ESR*.CME`` is CME's **THREE-MONTH** €STR future, which settles to the *compounded* €STR
-over a quarterly IMM reference period (3rd Wed -> 3rd Wed +3M). The shared rate-step math
-assumes a **ONE-MONTH** future settling to the *arithmetic average* daily rate over a single
-calendar month (the ZQ/SR1 convention). Feeding a 3-month compounded contract into 1-month
-math is WRONG. To make ECB correct, either (a) source a free 1-month-average €STR future
-(e.g. ICE One-Month €STR) and keep this math, or (b) implement proper 3-month-compounded
-strip math (multiple meetings per quarter). Until then ECB stays disabled (ECB_ENABLED=false)
-and must not be shipped. The €STR rate read (ECB SDMX) and the ECB-markets-on-Polymarket side
-are both confirmed to exist, so only the futures leg is blocked.
+⚠️ DEFERRED — no free data supports a correct ECB signal (verified 2026-06-24, §13):
+``ESR*.CME`` is CME's **THREE-MONTH** €STR future (compounded €STR over a quarterly IMM
+period, 3rd Wed -> 3rd Wed +3M), but the shared rate-step math needs a **ONE-MONTH**
+average-rate contract (ZQ/SR1 convention). Two fixes were investigated and BOTH need PAID
+data:
+  (a) a 1-month-average €STR future (ICE One-Month €STR) — exists but no free feed
+      (Yahoo/Stooq don't carry it);
+  (b) 3-month-compounded strip math — needs the OVERLAPPING serial (monthly) €STR contracts
+      to isolate a single meeting, but the free Yahoo feed reliably carries only the
+      QUARTERLY contracts (serials 404), and a quarterly window spans ~2 ECB meetings
+      (1 equation, 2 unknowns) → a single meeting's probability is under-determined.
+So ECB stays disabled (ECB_ENABLED=false) until a paid €STR feed (ICE 1-month / serial strip
+/ ICE ECB-dated €STR) is wired. The €STR rate read (ECB SDMX) and ECB markets on Polymarket
+both work, so only the futures leg is blocked.
 
 Degrades gracefully: a failed fetch for one meeting is skipped.
 """
