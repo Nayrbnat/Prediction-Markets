@@ -59,11 +59,14 @@ class HttpGateway:
         self, topic: str, *, venues: list[Venue] | None = None, limit: int = 50
     ) -> list[MarketRef]:
         want = set(venues or _ALL_VENUES)
-        tasks: list = []
-        labels: list[Venue] = []
+
+        # Phase 1: base prediction-market venues (concurrent). Their refs feed dynamic
+        # derivative markets (e.g. crypto derives Deribit targets from live PM/Kalshi markets).
+        base_tasks: list = []
+        base_labels: list[Venue] = []
         if "polymarket" in want:
-            tasks.append(polymarket_gamma.discover(self._gamma, topic, limit=limit))
-            labels.append("polymarket")
+            base_tasks.append(polymarket_gamma.discover(self._gamma, topic, limit=limit))
+            base_labels.append("polymarket")
         if "kalshi" in want:
             mapped = self._settings.kalshi_series.get(topic)
             if isinstance(mapped, str):
@@ -73,33 +76,41 @@ class HttpGateway:
             else:
                 series_tickers = None
             category = self._settings.kalshi_categories.get(topic)
-            tasks.append(
+            base_tasks.append(
                 kalshi.discover(
-                    self._kalshi,
-                    topic,
-                    limit=limit,
-                    series_tickers=series_tickers,
-                    category=category,
+                    self._kalshi, topic, limit=limit,
+                    series_tickers=series_tickers, category=category,
                 )
             )
-            labels.append("kalshi")
+            base_labels.append("kalshi")
+        base_refs = self._collect(
+            base_labels, await asyncio.gather(*base_tasks, return_exceptions=True)
+        )
+
+        # Phase 2: registered derivative markets (concurrent), given the base refs.
+        deriv_tasks: list = []
+        deriv_labels: list[Venue] = []
         for market in self._markets:
             if (
                 market.venue in want
                 and market.enabled(self._settings)
                 and market.serves_topic(topic, self._settings)
             ):
-                tasks.append(
+                deriv_tasks.append(
                     market.discover(
-                        self._market_clients[market.name],
-                        self._settings,
-                        topic,
-                        limit=limit,
+                        self._market_clients[market.name], self._settings, topic,
+                        limit=limit, prediction_refs=base_refs,
                     )
                 )
-                labels.append(market.venue)
+                deriv_labels.append(market.venue)
+        deriv_refs = self._collect(
+            deriv_labels, await asyncio.gather(*deriv_tasks, return_exceptions=True)
+        )
+        return [*base_refs, *deriv_refs]
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    @staticmethod
+    def _collect(labels: list[Venue], results: list) -> list[MarketRef]:
+        """Flatten gather results, dropping (and logging) any venue that raised."""
         refs: list[MarketRef] = []
         for label, result in zip(labels, results, strict=False):
             if isinstance(result, BaseException):

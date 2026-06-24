@@ -14,13 +14,26 @@ market phrasings before relying on it.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from app.markets._shared.threshold_compare import ThresholdPoint
-from app.models.domain import MarketObservation
+from app.models.domain import MarketObservation, MarketRef
 
 _DEFAULT_DERIVATIVE_VENUE = "deribit"
 _DEFAULT_PREDICTION_VENUES = ("polymarket", "kalshi")
+
+# Deribit expiry-token month abbreviations (verified live 2026-06-24): day has NO leading
+# zero, month is 3-letter uppercase, year is 2 digits, e.g. 2026-06-26 -> "26JUN26".
+_MONTHS = (
+    "", "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+)
+
+
+def deribit_token(when: datetime) -> str:
+    """A UTC datetime -> Deribit expiry token (e.g. 2026-06-26 -> '26JUN26')."""
+    return f"{when.day}{_MONTHS[when.month]}{when.year % 100:02d}"
 
 # Deribit gives TERMINAL P(S_T > K at expiry). We only compare against prediction markets
 # that are likewise terminal "above strike" thresholds. A terminal-above market carries one
@@ -130,3 +143,37 @@ def make_parser(
         return None
 
     return parse
+
+
+def targets_from_refs(
+    refs: list[MarketRef],
+    *,
+    underlying: str,
+    aliases: tuple[str, ...],
+    prediction_venues: tuple[str, ...] = _DEFAULT_PREDICTION_VENUES,
+) -> list[tuple[Decimal, str]]:
+    """Derive ``(strike, deribit_expiry_token)`` targets from live prediction-market refs.
+
+    The dynamic-targeting counterpart to static config targets: scan the Polymarket/Kalshi
+    crypto markets discovered this run, keep the TERMINAL above-thresholds for ``underlying``
+    (same terminal/barrier/strike rules as the comparator), and turn each into the Deribit
+    (strike, expiry-token) to query. Deduped + sorted. A target whose date/strike Deribit
+    does not list simply yields no curve downstream and is skipped — never fabricated.
+    """
+    targets: set[tuple[Decimal, str]] = set()
+    for ref in refs:
+        if ref.venue not in prediction_venues or ref.close_date is None:
+            continue
+        for outcome in ref.outcomes:
+            if outcome.strip().lower() == "no":
+                continue  # affirmative side only
+            text = f"{ref.event_title} {outcome}"
+            if not any(alias in text.lower() for alias in aliases):
+                continue
+            if not is_terminal_above(text):
+                continue
+            strike = parse_strike(outcome) or parse_strike(ref.event_title)
+            if strike is None:
+                continue
+            targets.add((strike, deribit_token(ref.close_date)))
+    return sorted(targets)
