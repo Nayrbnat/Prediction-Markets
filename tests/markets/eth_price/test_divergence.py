@@ -67,6 +67,24 @@ def test_no_outcome_and_non_eth_dropped() -> None:
                       title="Will Bitcoin be above $150,000 on December 26?")) is None
 
 
+def test_eth_strikes_not_collapsed_to_btc_grid() -> None:
+    # Regression: a $1000 grid would snap 1600 and 1700 both to 2000 and cross-compare
+    # them. With ETH's $50 grid they stay distinct -> two separate comparisons.
+    obs = [
+        _obs("deribit", "ETH-26DEC26-1600", "ETH ≥ $1,600", "0.60",
+             title="ETH ≥ $1,600 by 26DEC26"),
+        _obs("kalshi", "k1", "$1,600 or above", "0.50", title="ETH price on Dec 26, 2026?"),
+        _obs("deribit", "ETH-26DEC26-1700", "ETH ≥ $1,700", "0.40",
+             title="ETH ≥ $1,700 by 26DEC26"),
+        _obs("kalshi", "k2", "$1,700 or above", "0.38", title="ETH price on Dec 26, 2026?"),
+    ]
+    items = compare(obs, gap_threshold=Decimal("0.05"))
+    assert len(items) == 2
+    by_strike = {it.strike: it for it in items}
+    assert by_strike[Decimal(1600)].derivative_prob == Decimal("0.60")
+    assert by_strike[Decimal(1700)].derivative_prob == Decimal("0.40")
+
+
 def test_compare_emits_signed_gap() -> None:
     obs = [
         _obs("deribit", "ETH-26DEC26-5000", "ETH ≥ $5,000", "0.30",

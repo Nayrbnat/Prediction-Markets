@@ -15,6 +15,9 @@ from app.models.digest import ThresholdDivergence
 from app.models.domain import MarketObservation
 
 _DERIVATIVE_VENUE = "deribit"
+# Strike-grid for matching market↔options strikes. BTC trades in ~$1k strike steps near
+# spot, so snap to a $1,000 grid (e.g. $59,950 and $60,000 are the same threshold).
+_STRIKE_STEP = Decimal("1000")
 
 parse = make_parser(underlying="BTC", aliases=("btc", "bitcoin"))
 _parse_strike = parse_strike  # re-exported for tests
@@ -29,4 +32,5 @@ def compare(
         parser=parse,
         derivative_venue=_DERIVATIVE_VENUE,
         gap_threshold=gap_threshold,
+        strike_step=_STRIKE_STEP,
     )
