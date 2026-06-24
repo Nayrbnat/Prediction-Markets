@@ -5,11 +5,11 @@ I/O only. This source fetches:
     contract month (symbol ``ZQ{monthcode}{YY}.CBT``, e.g. July 2026 = ``ZQN26.CBT``);
   - the current effective fed funds rate (EFFR) from the NY Fed rates API.
 
-It hands those raw numbers to the pure rate-step math (``app/markets/_shared/rate_step``,
-re-exported via ``fed_rates/analysis.py``) and emits one ``MarketRef`` per upcoming FOMC
-meeting, shaped exactly like a prediction-market venue (``quoted_prices`` = the computed
-bucket probabilities), so it flows through the existing pricing -> snapshot -> digest
-pipeline as the ``cme`` venue.
+It binds the Fed-specific bits (ZQ symbol scheme, EFFR source, labels) and delegates the
+meeting orchestration + chaining to the shared ``app/markets/_shared/rate_futures``, which
+uses the pure rate-step math. One ``MarketRef`` per upcoming FOMC meeting is emitted, shaped
+like a prediction-market venue (``quoted_prices`` = computed bucket probabilities), flowing
+through the existing pricing -> snapshot -> digest pipeline as the ``cme`` venue.
 
 There is no order book and no per-trader data — CME contributes a futures-implied
 distribution only. Degrades gracefully: a failed fetch for one meeting is skipped.
@@ -18,19 +18,15 @@ distribution only. Degrades gracefully: a failed fetch for one meeting is skippe
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 import httpx
 
-from app.core.errors import RateLimitError, SourceError
 from app.core.http import fetch_json
-from app.core.logging import get_logger
 from app.core.rate_limit import AsyncRateLimiter
-from app.markets.fed_rates.analysis import fed_funds_distribution
+from app.markets._shared import rate_futures
 from app.models.domain import MarketRef
-
-logger = get_logger(__name__)
 
 VENUE = "cme"
 _limiter = AsyncRateLimiter(rate_per_sec=5.0)
@@ -45,10 +41,6 @@ _MONTH_CODE = {
 def zq_symbol(year: int, month: int) -> str:
     """Yahoo symbol for the ZQ contract of a given month, e.g. (2026, 7) -> 'ZQN26.CBT'."""
     return f"ZQ{_MONTH_CODE[month]}{year % 100:02d}.CBT"
-
-
-def _next_month(year: int, month: int) -> tuple[int, int]:
-    return (year + 1, 1) if month == 12 else (year, month + 1)
 
 
 def _to_decimal(value: object) -> Decimal | None:
@@ -97,8 +89,12 @@ async def _current_effr(client: httpx.AsyncClient) -> Decimal | None:
     return _to_decimal(rates[0].get("percentRate"))
 
 
-def _upcoming_meetings(meetings: list[date], *, today: date, horizon: int) -> list[date]:
-    return sorted(m for m in meetings if m >= today)[:horizon]
+def _label(meeting: date) -> str:
+    return f"Fed decision in {calendar.month_name[meeting.month]} {meeting.year}"
+
+
+def _key(meeting: date) -> str:
+    return f"FOMC-{meeting.isoformat()}"
 
 
 async def discover(
@@ -115,74 +111,21 @@ async def discover(
     Returns ``[]`` (clean degradation) when no meetings are configured/upcoming or the
     EFFR read fails — never fabricates a rate.
     """
-    today = datetime.now(timezone.utc).date()
-    upcoming = _upcoming_meetings(meetings, today=today, horizon=min(horizon, limit))
-    if not upcoming:
-        logger.warning("cme.no_upcoming_meetings", extra={"topic": topic})
-        return []
 
-    try:
-        r_start = await _current_effr(nyfed_client)
-    except (SourceError, RateLimitError) as exc:
-        logger.warning("cme.effr_failed", extra={"topic": topic, "error": str(exc)})
-        return []
-    if r_start is None:
-        logger.warning("cme.effr_unavailable", extra={"topic": topic})
-        return []
+    async def current_rate() -> Decimal | None:
+        return await _current_effr(nyfed_client)
 
-    meeting_months = {(m.year, m.month) for m in meetings}
-    refs: list[MarketRef] = []
-    # Carry the expected rate forward across meetings (chronological): meeting k's
-    # starting rate is the implied post-meeting rate of meeting k-1, not the current
-    # EFFR — otherwise the 2nd meeting double-counts the cumulative move.
-    current_rate = r_start
-    for meeting in upcoming:  # _upcoming_meetings returns them sorted ascending
-        try:
-            price_m = await _zq_price(yahoo_client, zq_symbol(meeting.year, meeting.month))
-            ny, nm = _next_month(meeting.year, meeting.month)
-            price_next = await _zq_price(yahoo_client, zq_symbol(ny, nm))
-        except (SourceError, RateLimitError) as exc:
-            logger.warning(
-                "cme.meeting_failed", extra={"meeting": meeting.isoformat(), "error": str(exc)}
-            )
-            continue
-        if price_m is None:
-            logger.warning("cme.price_unavailable", extra={"meeting": meeting.isoformat()})
-            continue
-        next_has_meeting = (ny, nm) in meeting_months
+    async def price_for(year: int, month: int) -> Decimal | None:
+        return await _zq_price(yahoo_client, zq_symbol(year, month))
 
-        result = fed_funds_distribution(
-            meeting_date=meeting,
-            price_meeting_month=price_m,
-            r_start=current_rate,
-            price_next_month=price_next,
-            next_month_has_meeting=next_has_meeting,
-        )
-        current_rate = result.r_end  # chain forward for the next meeting
-
-        label = f"Fed decision in {calendar.month_name[meeting.month]} {meeting.year}"
-        refs.append(
-            MarketRef(
-                venue=VENUE,
-                event_id=f"FOMC-{meeting.isoformat()}",
-                market_key=f"FOMC-{meeting.isoformat()}",
-                event_title=label,
-                outcomes=result.outcomes,
-                resolved=False,
-                enable_order_book=False,
-                topic=topic,
-                quoted_prices=result.probabilities,
-                close_date=datetime(meeting.year, meeting.month, meeting.day, tzinfo=timezone.utc),
-            )
-        )
-        logger.info(
-            "cme.meeting_priced",
-            extra={
-                "meeting": meeting.isoformat(),
-                "method": result.method,
-                "delta_bps": str(result.delta_bps),
-            },
-        )
-
-    logger.info("cme.discover", extra={"topic": topic, "meetings": len(refs)})
-    return refs
+    return await rate_futures.discover_meetings(
+        venue=VENUE,
+        topic=topic,
+        meetings=meetings,
+        current_rate=current_rate,
+        price_for=price_for,
+        label_fn=_label,
+        key_fn=_key,
+        horizon=horizon,
+        limit=limit,
+    )
