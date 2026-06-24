@@ -13,10 +13,13 @@ from datetime import datetime, timezone
 from app.analysis.probability import q6
 from app.config import Settings
 from app.core.logging import get_logger
+from app.markets._shared import rate_compare
 from app.markets.btc_price.divergence import compare as compare_btc_thresholds
+from app.markets.ecb_rates.divergence import canonical_outcome as ecb_canonical
+from app.markets.ecb_rates.divergence import compare as compare_ecb_divergences
 from app.markets.eth_price.divergence import compare as compare_eth_thresholds
-from app.markets.fed_rates.divergence import compare as compare_divergences
-from app.markets.fed_rates.divergence import cut_hold_raise
+from app.markets.fed_rates.divergence import canonical_outcome as fed_canonical
+from app.markets.fed_rates.divergence import compare as compare_fed_divergences
 from app.models.digest import (
     MarketDigest,
     MeetingMatrix,
@@ -30,8 +33,16 @@ from app.persistence.repository import MarketRepository
 logger = get_logger(__name__)
 
 # Display label + sort order per venue for the cut/hold/raise matrix.
-_SOURCE_LABEL = {"polymarket": "Polymarket", "kalshi": "Kalshi", "cme": "Futures"}
-_SOURCE_ORDER = {"polymarket": 0, "kalshi": 1, "cme": 2}
+_SOURCE_LABEL = {
+    "polymarket": "Polymarket", "kalshi": "Kalshi",
+    "cme": "Futures", "estr": "€STR futures",
+}
+_SOURCE_ORDER = {"polymarket": 0, "kalshi": 1, "cme": 2, "estr": 2}
+
+
+def _rate_canonical(label: str) -> str | None:
+    """Combined Fed + ECB label->bucket mapping for the rate matrix collapse."""
+    return fed_canonical(label) or ecb_canonical(label)
 
 
 def _group_tracked(observations: list[MarketObservation]) -> list[TrackedMarket]:
@@ -82,7 +93,7 @@ def _build_meeting_matrices(
     seen_source: dict[tuple[int, int], set[str]] = {}
     mapped: set[tuple[str, str]] = set()
     for (venue, market_key), entry in by_market.items():
-        collapsed = cut_hold_raise(entry["pairs"])
+        collapsed = rate_compare.cut_hold_raise(entry["pairs"], canonical=_rate_canonical)
         close_date = entry["close_date"]
         if collapsed is None or close_date is None:
             continue  # not Fed cut/hold/raise, or unplaceable -> generic tracked list
@@ -147,9 +158,12 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
         extra={"meetings": len(matrices), "other_tracked": len(tracked)},
     )
 
-    # Step 4: relative value — market vs Fed-funds-futures-implied, same meeting.
-    # Reuses the tracked observations (which include the `cme` venue) — no extra read.
-    divergences = compare_divergences(tracked_obs, gap_threshold=settings.rv_gap_threshold)
+    # Step 4: relative value — market vs rate-futures-implied, same meeting (Fed + ECB).
+    # Reuses the tracked observations (which include the `cme`/`estr` venues) — no extra read.
+    divergences = [
+        *compare_fed_divergences(tracked_obs, gap_threshold=settings.rv_gap_threshold),
+        *compare_ecb_divergences(tracked_obs, gap_threshold=settings.rv_gap_threshold),
+    ]
     material = sum(1 for d in divergences if d.material)
     logger.info(
         "digest.divergences", extra={"total": len(divergences), "material": material}

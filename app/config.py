@@ -19,6 +19,17 @@ def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _dates(value: str) -> list[date]:
+    """Parse a CSV of ISO dates into a list, skipping malformed tokens."""
+    out: list[date] = []
+    for token in _csv(value):
+        try:
+            out.append(date.fromisoformat(token))
+        except ValueError:
+            continue
+    return out
+
+
 def _targets(value: str) -> list[tuple[Decimal, str]]:
     """Parse a CSV of ``strike@expirytoken`` into (Decimal strike, token) pairs."""
     out: list[tuple[Decimal, str]] = []
@@ -95,6 +106,15 @@ class Settings(BaseSettings):
     eth_topics: str = "eth price"
     eth_targets: str = ""
 
+    # ---- ECB rate decision (€STR futures, relative value) --------------
+    # §13: verify the ESR Yahoo symbol scheme + ECB SDMX series key against live docs
+    # and confirm the 1-month ESTR future settles to the average €STR before enabling.
+    ecb_enabled: bool = False
+    ecb_topics: str = "ecb rate decision"  # CSV of topics the ECB source serves
+    ecb_meeting_horizon: int = 2  # number of upcoming ECB meetings to price
+    ecb_meetings: str = ""  # CSV of ISO ECB Governing Council decision dates
+    ecb_rates_base_url: str = "https://data-api.ecb.europa.eu"  # ECB SDMX (free) for €STR
+
     # ---- SMTP (leave blank to use ConsoleEmailSender) -------------------
     smtp_host: str = ""
     smtp_port: int = 587
@@ -139,13 +159,16 @@ class Settings(BaseSettings):
     @property
     def fomc_meeting_dates(self) -> list[date]:
         """Parsed FOMC announcement dates (skips malformed tokens)."""
-        out: list[date] = []
-        for token in _csv(self.fomc_meetings):
-            try:
-                out.append(date.fromisoformat(token))
-            except ValueError:
-                continue
-        return out
+        return _dates(self.fomc_meetings)
+
+    @property
+    def ecb_topic_set(self) -> set[str]:
+        return set(_csv(self.ecb_topics))
+
+    @property
+    def ecb_meeting_dates(self) -> list[date]:
+        """Parsed ECB Governing Council decision dates (skips malformed tokens)."""
+        return _dates(self.ecb_meetings)
 
     @property
     def btc_topic_set(self) -> set[str]:

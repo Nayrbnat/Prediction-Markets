@@ -421,7 +421,7 @@ def test_render_divergence_section_present_for_material_gap() -> None:
     )
     _, html, text = render_digest(digest)
     for body in (html, text):
-        assert "fed funds futures" in body.lower()  # HTML title-case / text upper-case
+        assert "rate futures" in body.lower()  # HTML title-case / text upper-case
         assert "September 2026" in body
         assert "-7.0pp" in body
 
@@ -440,8 +440,8 @@ def test_render_divergence_section_absent_when_no_material_gap() -> None:
         divergence_count=0,
     )
     _, html, text = render_digest(digest)
-    assert "fed funds futures" not in html.lower()
-    assert "fed funds futures" not in text.lower()
+    assert "rate futures" not in html.lower()
+    assert "rate futures" not in text.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -179,7 +179,7 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
 <h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
   Rate-decision probabilities by source
   <span style="font-size:0.75em;color:#888;font-weight:normal">
-    — Cut / Hold / Raise per FOMC meeting; futures = ZQ-implied
+    — Cut / Hold / Raise per central-bank meeting; futures = rate-futures-implied
   </span>
 </h2>
 <table style="{table_style}">
@@ -206,9 +206,9 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
         div_rows = "\n".join(_render_divergence_html(d) for d in material_divs)
         divergence_section = f"""
 <h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
-  Relative value vs Fed funds futures ({digest.divergence_count})
+  Relative value vs rate futures ({digest.divergence_count})
   <span style="font-size:0.75em;color:#888;font-weight:normal">
-    — prediction market vs ZQ-implied; a signal to investigate, not arbitrage
+    — prediction market vs rate-futures-implied; a signal to investigate, not arbitrage
   </span>
 </h2>
 <table style="{table_style}">
@@ -355,8 +355,8 @@ def _render_text(digest: MarketDigest, subject: str) -> str:
     material_divs = [d for d in digest.divergences if d.material]
     if material_divs:
         lines.append(
-            f"RELATIVE VALUE vs FED FUNDS FUTURES ({digest.divergence_count}) "
-            "— prediction market vs ZQ-implied; a signal, not arbitrage"
+            f"RELATIVE VALUE vs RATE FUTURES ({digest.divergence_count}) "
+            "— prediction market vs rate-futures-implied; a signal, not arbitrage"
         )
         lines.append("-" * 60)
         for d in material_divs:
