@@ -9,7 +9,7 @@ import respx
 from httpx import Response
 
 from app.core.http import make_client
-from app.sources import cme_fedfunds
+from app.markets.fed_rates import source as cme_fedfunds
 
 YAHOO = "https://yahoo.test"
 NYFED = "https://nyfed.test"

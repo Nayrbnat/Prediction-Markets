@@ -10,11 +10,11 @@ from __future__ import annotations
 import calendar
 from datetime import datetime, timezone
 
-from app.analysis.divergence import compare as compare_divergences
-from app.analysis.divergence import cut_hold_raise
 from app.analysis.probability import q6
 from app.config import Settings
 from app.core.logging import get_logger
+from app.markets.fed_rates.divergence import compare as compare_divergences
+from app.markets.fed_rates.divergence import cut_hold_raise
 from app.models.digest import (
     MarketDigest,
     MeetingMatrix,

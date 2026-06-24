@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from app.analysis.fed_funds import (
+from app.markets.fed_rates.analysis import (
     distribution_from_delta,
     fed_funds_distribution,
     implied_average_rate,

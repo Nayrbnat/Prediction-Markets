@@ -5,10 +5,11 @@ I/O only. This source fetches:
     contract month (symbol ``ZQ{monthcode}{YY}.CBT``, e.g. July 2026 = ``ZQN26.CBT``);
   - the current effective fed funds rate (EFFR) from the NY Fed rates API.
 
-It hands those raw numbers to the pure ``app/analysis/fed_funds.py`` math and emits one
-``MarketRef`` per upcoming FOMC meeting, shaped exactly like a prediction-market venue
-(``quoted_prices`` = the computed bucket probabilities), so it flows through the existing
-pricing -> snapshot -> digest pipeline as the ``cme`` venue.
+It hands those raw numbers to the pure rate-step math (``app/markets/_shared/rate_step``,
+re-exported via ``fed_rates/analysis.py``) and emits one ``MarketRef`` per upcoming FOMC
+meeting, shaped exactly like a prediction-market venue (``quoted_prices`` = the computed
+bucket probabilities), so it flows through the existing pricing -> snapshot -> digest
+pipeline as the ``cme`` venue.
 
 There is no order book and no per-trader data — CME contributes a futures-implied
 distribution only. Degrades gracefully: a failed fetch for one meeting is skipped.
@@ -22,11 +23,11 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
-from app.analysis.fed_funds import fed_funds_distribution
 from app.core.errors import RateLimitError, SourceError
 from app.core.http import fetch_json
 from app.core.logging import get_logger
 from app.core.rate_limit import AsyncRateLimiter
+from app.markets.fed_rates.analysis import fed_funds_distribution
 from app.models.domain import MarketRef
 
 logger = get_logger(__name__)

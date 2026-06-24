@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.core.logging import get_logger
+from app.markets import registered_markets
 from app.models.domain import MarketRef
 from app.models.provenance import Venue
 from app.models.responses import VenueAvailability
@@ -10,10 +11,11 @@ from app.services.gateway import Gateway
 
 logger = get_logger(__name__)
 
+# Base prediction-market venues + each registered derivative market's signals.
 _SIGNALS: dict[Venue, list[str]] = {
     "polymarket": ["price", "volume", "depth"],  # smart-money tilt is v2
     "kalshi": ["price", "volume", "depth"],
-    "cme": ["futures-implied"],  # ZQ-derived probability only — no order book / per-trader data
+    **{m.venue: m.signals for m in registered_markets()},
 }
 
 
