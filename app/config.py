@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,6 +17,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 def _csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _targets(value: str) -> list[tuple[Decimal, str]]:
+    """Parse a CSV of ``strike@expirytoken`` into (Decimal strike, token) pairs."""
+    out: list[tuple[Decimal, str]] = []
+    for token in _csv(value):
+        strike_str, sep, expiry = token.partition("@")
+        if not sep or not expiry.strip():
+            continue
+        try:
+            out.append((Decimal(strike_str.strip()), expiry.strip()))
+        except InvalidOperation:
+            continue
+    return out
 
 
 class Settings(BaseSettings):
@@ -70,6 +84,17 @@ class Settings(BaseSettings):
     yahoo_chart_base_url: str = "https://query1.finance.yahoo.com"
     nyfed_rates_base_url: str = "https://markets.newyorkfed.org"
 
+    # ---- Crypto price thresholds (Deribit options, relative value) ------
+    deribit_base_url: str = "https://www.deribit.com"
+    crypto_gap_threshold: Decimal = Decimal("0.05")  # |market − options| (0..1) to flag
+    btc_enabled: bool = False
+    btc_topics: str = "btc price"  # CSV of topics the BTC source serves
+    # CSV of "strike@expirytoken" Deribit targets, e.g. "120000@26JUN26,150000@26DEC26".
+    btc_targets: str = ""
+    eth_enabled: bool = False
+    eth_topics: str = "eth price"
+    eth_targets: str = ""
+
     # ---- SMTP (leave blank to use ConsoleEmailSender) -------------------
     smtp_host: str = ""
     smtp_port: int = 587
@@ -121,6 +146,24 @@ class Settings(BaseSettings):
             except ValueError:
                 continue
         return out
+
+    @property
+    def btc_topic_set(self) -> set[str]:
+        return set(_csv(self.btc_topics))
+
+    @property
+    def eth_topic_set(self) -> set[str]:
+        return set(_csv(self.eth_topics))
+
+    @property
+    def btc_target_list(self) -> list[tuple[Decimal, str]]:
+        """Parsed BTC (strike, expiry-token) Deribit targets (skips malformed tokens)."""
+        return _targets(self.btc_targets)
+
+    @property
+    def eth_target_list(self) -> list[tuple[Decimal, str]]:
+        """Parsed ETH (strike, expiry-token) Deribit targets (skips malformed tokens)."""
+        return _targets(self.eth_targets)
 
 
 @lru_cache

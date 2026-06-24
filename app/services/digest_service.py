@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from app.analysis.probability import q6
 from app.config import Settings
 from app.core.logging import get_logger
+from app.markets.btc_price.divergence import compare as compare_btc_thresholds
 from app.markets.fed_rates.divergence import compare as compare_divergences
 from app.markets.fed_rates.divergence import cut_hold_raise
 from app.models.digest import (
@@ -153,6 +154,16 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
         "digest.divergences", extra={"total": len(divergences), "material": material}
     )
 
+    # Step 4b: threshold relative value — prediction market vs options-implied P(above).
+    threshold_divs = compare_btc_thresholds(
+        tracked_obs, gap_threshold=settings.crypto_gap_threshold
+    )
+    threshold_material = sum(1 for t in threshold_divs if t.material)
+    logger.info(
+        "digest.threshold_divergences",
+        extra={"total": len(threshold_divs), "material": threshold_material},
+    )
+
     # Step 5: assemble
     digest = MarketDigest(
         generated_for=generated_for,
@@ -161,9 +172,11 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
         meeting_matrices=matrices,
         tracked=tracked,
         divergences=divergences,
+        threshold_divergences=threshold_divs,
         mover_count=len(movers),
         tracked_count=len(tracked),
         divergence_count=material,
+        threshold_divergence_count=threshold_material,
     )
     logger.info(
         "digest.assembled",
