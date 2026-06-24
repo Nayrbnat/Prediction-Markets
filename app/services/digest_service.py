@@ -14,6 +14,7 @@ from app.analysis.probability import q6
 from app.config import Settings
 from app.core.logging import get_logger
 from app.markets.btc_price.divergence import compare as compare_btc_thresholds
+from app.markets.eth_price.divergence import compare as compare_eth_thresholds
 from app.markets.fed_rates.divergence import compare as compare_divergences
 from app.markets.fed_rates.divergence import cut_hold_raise
 from app.models.digest import (
@@ -155,9 +156,10 @@ async def build_digest(repo: MarketRepository, settings: Settings) -> MarketDige
     )
 
     # Step 4b: threshold relative value — prediction market vs options-implied P(above).
-    threshold_divs = compare_btc_thresholds(
-        tracked_obs, gap_threshold=settings.crypto_gap_threshold
-    )
+    threshold_divs = [
+        *compare_btc_thresholds(tracked_obs, gap_threshold=settings.crypto_gap_threshold),
+        *compare_eth_thresholds(tracked_obs, gap_threshold=settings.crypto_gap_threshold),
+    ]
     threshold_material = sum(1 for t in threshold_divs if t.material)
     logger.info(
         "digest.threshold_divergences",

@@ -1,7 +1,7 @@
-"""BTC relative value: Polymarket/Kalshi P(BTC ≥ strike) vs the Deribit options-implied
-P(BTC ≥ strike) for the same strike + expiry.
+"""ETH relative value: Polymarket/Kalshi P(ETH ≥ strike) vs the Deribit options-implied
+P(ETH ≥ strike) for the same strike + expiry.
 
-Just the BTC identity (underlying + name aliases); the parsing, matching, and gap
+Just the ETH identity (underlying + name aliases); the parsing, matching, and gap
 mechanism are the shared ``_shared/threshold_parse`` + ``_shared/threshold_compare``.
 """
 
@@ -16,14 +16,14 @@ from app.models.domain import MarketObservation
 
 _DERIVATIVE_VENUE = "deribit"
 
-parse = make_parser(underlying="BTC", aliases=("btc", "bitcoin"))
+parse = make_parser(underlying="ETH", aliases=("eth", "ether", "ethereum"))
 _parse_strike = parse_strike  # re-exported for tests
 
 
 def compare(
     observations: list[MarketObservation], *, gap_threshold: Decimal
 ) -> list[ThresholdDivergence]:
-    """Emit signed market−derivative P(above) gaps per (BTC, strike, expiry)."""
+    """Emit signed market−derivative P(above) gaps per (ETH, strike, expiry)."""
     return threshold_compare.compare(
         observations,
         parser=parse,
