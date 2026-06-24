@@ -22,10 +22,16 @@ from app.models.domain import MarketObservation
 _DEFAULT_DERIVATIVE_VENUE = "deribit"
 _DEFAULT_PREDICTION_VENUES = ("polymarket", "kalshi")
 
-# An outcome/label denotes the "above strike" side if it contains one of these.
-_ABOVE_WORDS = (
-    "≥", ">=", ">", "above", "over", "reach", "hit", "exceed",
-    "at least", "more than", "or more", "yes",
+# Deribit gives TERMINAL P(S_T > K at expiry). We only compare against prediction markets
+# that are likewise terminal "above strike" thresholds. A terminal-above market carries one
+# of these markers ...
+_ABOVE_WORDS = ("above", "≥", ">=", "or above", "at least", "greater than")
+# ... and NONE of these, which signal a BARRIER/touch/running-max or a DOWNSIDE market
+# (e.g. Polymarket "reach $X"/"dip to $X", Kalshi "how high this year"). Those are not
+# terminal P(S_T>K), so we skip them rather than compare apples to oranges (§13).
+_SKIP_WORDS = (
+    "reach", "hit", "touch", "dip", "max", "fall", "drop",
+    "below", "under", "less than", "how high", "or below", "↑", "↓",
 )
 # A strike must be $-anchored or carry a k/M suffix — avoids matching bare years (2026).
 _DOLLAR = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?)")
@@ -57,9 +63,13 @@ def parse_strike(text: str) -> Decimal | None:
     return None
 
 
-def is_above(text: str) -> bool:
-    """Whether a label denotes the 'above strike' side."""
+def is_terminal_above(text: str) -> bool:
+    """Whether free text denotes a TERMINAL 'above strike' threshold (not a barrier/touch/
+    running-max/downside market). Used to keep the comparison apples-to-apples with the
+    options-implied terminal P(S_T > K)."""
     low = text.lower()
+    if any(word in low for word in _SKIP_WORDS):
+        return False
     return any(word in low for word in _ABOVE_WORDS)
 
 
@@ -89,13 +99,20 @@ def make_parser(
         )
 
     def _prediction_point(obs: MarketObservation) -> ThresholdPoint | None:
-        # Best-effort parse of a Polymarket/Kalshi threshold row (the 'above' side).
+        # Best-effort parse of a Polymarket/Kalshi TERMINAL above-threshold row.
+        # Polymarket carries strike + direction in the (market) question now used as the
+        # event_title ("...above $60,000 on June 24?"), outcome "Yes"/"No"; Kalshi carries
+        # them in the outcome label ("$57,000 or above"). Direction is read from the text,
+        # NOT the Yes/No outcome, so downside markets aren't misread as 'above'.
         if obs.close_date is None:
             return None
-        if not any(alias in obs.event_title.lower() for alias in aliases):
+        text = f"{obs.event_title} {obs.outcome}"
+        if not any(alias in text.lower() for alias in aliases):
             return None
-        if not is_above(obs.outcome):
-            return None
+        if obs.outcome.strip().lower() == "no":
+            return None  # affirmative side only — the 'No' row is the complement
+        if not is_terminal_above(text):
+            return None  # skip barrier/touch/max/downside markets (§13)
         strike = parse_strike(obs.outcome) or parse_strike(obs.event_title)
         if strike is None:
             return None

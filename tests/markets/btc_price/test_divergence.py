@@ -1,4 +1,10 @@
-"""Hand-checked tests for BTC threshold relative value (parsing + comparison)."""
+"""Hand-checked tests for BTC threshold relative value (terminal-only parse + compare).
+
+Reflects real live shapes (verified 2026-06-24): Polymarket carries strike+direction in
+the market question (now the event_title); Kalshi carries them in the outcome label
+("$X or above"). Only TERMINAL above-thresholds are compared; barrier/touch/downside are
+skipped to stay apples-to-apples with Deribit's terminal P(S_T>K).
+"""
 
 from __future__ import annotations
 
@@ -15,13 +21,8 @@ def _obs(
     venue: str, market_key: str, outcome: str, prob: str, *, title: str, close: datetime = DEC
 ) -> MarketObservation:
     return MarketObservation(
-        venue=venue,
-        market_key=market_key,
-        outcome=outcome,
-        event_title=title,
-        probability=Decimal(prob),
-        raw_price=Decimal(prob),
-        close_date=close,
+        venue=venue, market_key=market_key, outcome=outcome, event_title=title,
+        probability=Decimal(prob), raw_price=Decimal(prob), close_date=close,
     )
 
 
@@ -33,7 +34,6 @@ def test_parse_strike_dollar_and_suffix_forms() -> None:
 
 
 def test_parse_strike_ignores_bare_year() -> None:
-    # "by December 31, 2026" has no $ and no k/M suffix -> not mistaken for a strike.
     assert _parse_strike("by December 31, 2026") is None
 
 
@@ -53,9 +53,10 @@ def test_deribit_below_row_is_dropped() -> None:
     assert parse(obs) is None
 
 
-def test_prediction_yes_row_parsed_from_title() -> None:
-    obs = _obs("polymarket", "pm-btc-150k", "Yes", "0.45",
-               title="Will Bitcoin reach $150,000 by December 2026?")
+def test_polymarket_terminal_above_parsed_from_question() -> None:
+    # Real Polymarket shape: child question is the event_title, outcome "Yes".
+    obs = _obs("polymarket", "0xabc", "Yes", "0.45",
+               title="Will the price of Bitcoin be above $150,000 on December 26?")
     point = parse(obs)
     assert point is not None
     assert point.venue == "polymarket"
@@ -63,15 +64,38 @@ def test_prediction_yes_row_parsed_from_title() -> None:
     assert point.prob_above == Decimal("0.45")
 
 
-def test_prediction_no_row_is_dropped() -> None:
-    obs = _obs("polymarket", "pm-btc-150k", "No", "0.55",
-               title="Will Bitcoin reach $150,000 by December 2026?")
+def test_kalshi_or_above_parsed_from_outcome() -> None:
+    # Real Kalshi shape: yes_sub_title is the outcome, event title is the date.
+    obs = _obs("kalshi", "KXBTCD-26DEC2617-T149999", "$150,000 or above", "0.40",
+               title="BTC price on Dec 26, 2026?")
+    point = parse(obs)
+    assert point is not None
+    assert point.strike == Decimal(150_000)
+    assert point.prob_above == Decimal("0.40")
+
+
+def test_barrier_reach_market_skipped() -> None:
+    # "reach" = touch/barrier, not terminal -> skipped (§13).
+    obs = _obs("polymarket", "0xr", "Yes", "0.55",
+               title="Will Bitcoin reach $150,000 in December?")
+    assert parse(obs) is None
+
+
+def test_downside_dip_market_skipped() -> None:
+    obs = _obs("polymarket", "0xd", "Yes", "0.20",
+               title="Will Bitcoin dip to $80,000 in December?")
+    assert parse(obs) is None
+
+
+def test_no_outcome_dropped() -> None:
+    obs = _obs("polymarket", "0xabc", "No", "0.55",
+               title="Will the price of Bitcoin be above $150,000 on December 26?")
     assert parse(obs) is None
 
 
 def test_non_btc_market_dropped() -> None:
-    obs = _obs("polymarket", "pm-eth", "Yes", "0.40",
-               title="Will Ethereum reach $5,000 by December 2026?")
+    obs = _obs("polymarket", "0xeth", "Yes", "0.40",
+               title="Will Ethereum be above $5,000 on December 26?")
     assert parse(obs) is None
 
 
@@ -79,15 +103,14 @@ def test_compare_emits_signed_gap_market_minus_derivative() -> None:
     obs = [
         _obs("deribit", "BTC-26DEC26-150000", "BTC ≥ $150,000", "0.30",
              title="BTC ≥ $150,000 by 26DEC26"),
-        _obs("polymarket", "pm-btc-150k", "Yes", "0.45",
-             title="Will Bitcoin reach $150,000 by December 2026?"),
+        _obs("polymarket", "0xabc", "Yes", "0.45",
+             title="Will the price of Bitcoin be above $150,000 on December 26?"),
     ]
     items = compare(obs, gap_threshold=Decimal("0.05"))
     assert len(items) == 1
     it = items[0]
-    assert it.underlying == "BTC"
-    assert it.strike == Decimal(150_000)
     assert it.market_venue == "polymarket"
+    assert it.strike == Decimal(150_000)
     assert it.market_prob == Decimal("0.45")
     assert it.derivative_prob == Decimal("0.30")
     assert it.gap == Decimal("0.15")  # 0.45 - 0.30
@@ -95,12 +118,10 @@ def test_compare_emits_signed_gap_market_minus_derivative() -> None:
 
 
 def test_compare_snaps_near_strikes_to_same_grid() -> None:
-    # PM strike 149,950 and options 150,000 snap to the same 1000-grid -> compared.
     obs = [
         _obs("deribit", "BTC-26DEC26-150000", "BTC ≥ $150,000", "0.30",
              title="BTC ≥ $150,000 by 26DEC26"),
-        _obs("polymarket", "pm-btc", "Yes", "0.31",
-             title="Will BTC close above $149,950 in Dec 2026?"),
+        _obs("kalshi", "kx", "$149,950 or above", "0.31", title="BTC price on Dec 26, 2026?"),
     ]
     items = compare(obs, gap_threshold=Decimal("0.05"))
     assert len(items) == 1
@@ -109,7 +130,7 @@ def test_compare_snaps_near_strikes_to_same_grid() -> None:
 
 def test_compare_no_derivative_yields_nothing() -> None:
     obs = [
-        _obs("polymarket", "pm-btc-150k", "Yes", "0.45",
-             title="Will Bitcoin reach $150,000 by December 2026?"),
+        _obs("polymarket", "0xabc", "Yes", "0.45",
+             title="Will the price of Bitcoin be above $150,000 on December 26?"),
     ]
     assert compare(obs, gap_threshold=Decimal("0.05")) == []

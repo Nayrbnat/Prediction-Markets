@@ -88,6 +88,23 @@ async def test_multi_outcome_event_grouped_with_candidate_labels() -> None:
     assert ref.token_ids == []  # grouped -> use quoted prices, skip per-candidate CLOB
 
 
+async def test_binary_ref_uses_child_question_as_title() -> None:
+    # Multi-strike price events template the event title ("Bitcoin above ___ on June 24?")
+    # but carry the strike in each child's `question` — which must become the ref title so
+    # downstream relative-value matching can read the strike.
+    payload = {"events": [{"id": "E", "title": "Bitcoin above ___ on June 24?",
+                           "negRisk": False, "markets": [
+        {"conditionId": "0xq", "outcomes": '["Yes","No"]', "outcomePrices": '["0.4","0.6"]',
+         "question": "Will the price of Bitcoin be above $60,000 on June 24?", "closed": False}
+    ]}]}
+    async with respx.mock:
+        respx.get(f"{BASE}/public-search").mock(return_value=Response(200, json=payload))
+        async with make_client(base_url=BASE) as client:
+            refs = await gamma.discover(client, "btc price")
+    assert len(refs) == 1
+    assert refs[0].event_title == "Will the price of Bitcoin be above $60,000 on June 24?"
+
+
 async def test_resolved_binary_dropped() -> None:
     payload = {"events": [{"id": "E", "title": "t", "negRisk": False, "markets": [
         {"conditionId": "x", "outcomes": '["Yes","No"]', "outcomePrices": '["0.5","0.5"]',
