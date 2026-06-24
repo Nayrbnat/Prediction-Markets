@@ -36,19 +36,10 @@ entrypoint = "app.main:app"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-# v1 packages only. app.llm is a v2 seam (see ARCHITECTURE.md) — add it back when built.
-packages = [
-    "app",
-    "app.core",
-    "app.models",
-    "app.sources",
-    "app.analysis",
-    "app.persistence",
-    "app.services",
-    "app.api",
-    "app.notifications",
-]
+[tool.setuptools.packages.find]
+# Auto-discover all app subpackages (incl. app.markets.* vertical modules).
+# app.llm is a v2 seam (see ARCHITECTURE.md) — created when built.
+include = ["app*"]
 
 [tool.setuptools.package-data]
 "app.persistence" = ["schema.sql"]

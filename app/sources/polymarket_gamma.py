@@ -118,11 +118,18 @@ def _binary_ref(
         # open_interest: use event-level value threaded in from _event_to_refs.
         open_interests: list[Decimal | None] = [event_open_interest] * n
 
+        # Prefer the child market's own question as the title: in multi-strike price
+        # events the event title is a template ("Bitcoin above ___ on June 24?") while
+        # each child's `question` carries the actual strike + direction
+        # ("Will the price of Bitcoin be above $60,000 on June 24?"), which downstream
+        # relative-value matching needs. Falls back to the event title when absent.
+        market_title = str(market.get("question") or event_title)
+
         return MarketRef(
             venue=VENUE,
             event_id=event_id,
             market_key=market_key,
-            event_title=event_title,
+            event_title=market_title,
             outcomes=outcomes,
             token_ids=token_ids,
             condition_id=market.get("conditionId"),

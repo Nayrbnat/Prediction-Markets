@@ -12,6 +12,7 @@ from app.models.digest import (
     MarketDigest,
     MeetingMatrix,
     MoverItem,
+    ThresholdDivergence,
     TrackedMarket,
 )
 
@@ -66,6 +67,21 @@ def _render_divergence_html(d: DivergenceItem) -> str:
         f'<td style="padding:4px 8px;color:{colour};font-weight:bold">'
         f'{_signed_pp(d.gap)}</td>'
         f'<td style="padding:4px 8px;color:#888;font-size:0.9em">{d.market_venue}</td>'
+        f'</tr>'
+    )
+
+
+def _render_threshold_html(t: ThresholdDivergence) -> str:
+    colour = _mover_colour(t.gap)
+    return (
+        f'<tr>'
+        f'<td style="padding:4px 8px;font-weight:bold">{t.underlying} ≥ ${t.strike:,.0f}</td>'
+        f'<td style="padding:4px 8px">{t.expiry}</td>'
+        f'<td style="padding:4px 8px">{_pct(t.market_prob)}</td>'
+        f'<td style="padding:4px 8px">{_pct(t.derivative_prob)}</td>'
+        f'<td style="padding:4px 8px;color:{colour};font-weight:bold">'
+        f'{_signed_pp(t.gap)}</td>'
+        f'<td style="padding:4px 8px;color:#888;font-size:0.9em">{t.market_venue}</td>'
         f'</tr>'
     )
 
@@ -163,7 +179,7 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
 <h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
   Rate-decision probabilities by source
   <span style="font-size:0.75em;color:#888;font-weight:normal">
-    — Cut / Hold / Raise per FOMC meeting; futures = ZQ-implied
+    — Cut / Hold / Raise per central-bank meeting; futures = rate-futures-implied
   </span>
 </h2>
 <table style="{table_style}">
@@ -190,9 +206,9 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
         div_rows = "\n".join(_render_divergence_html(d) for d in material_divs)
         divergence_section = f"""
 <h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
-  Relative value vs Fed funds futures ({digest.divergence_count})
+  Relative value vs rate futures ({digest.divergence_count})
   <span style="font-size:0.75em;color:#888;font-weight:normal">
-    — prediction market vs ZQ-implied; a signal to investigate, not arbitrage
+    — prediction market vs rate-futures-implied; a signal to investigate, not arbitrage
   </span>
 </h2>
 <table style="{table_style}">
@@ -213,6 +229,36 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
 """
     else:
         divergence_section = ""
+
+    # Threshold relative value (prediction market vs options-implied P(above)).
+    material_thresholds = [t for t in digest.threshold_divergences if t.material]
+    if material_thresholds:
+        thr_rows = "\n".join(_render_threshold_html(t) for t in material_thresholds)
+        threshold_section = f"""
+<h2 style="color:#333;border-bottom:1px solid #ddd;padding-bottom:6px;margin-top:32px">
+  Relative value vs options-implied ({digest.threshold_divergence_count})
+  <span style="font-size:0.75em;color:#888;font-weight:normal">
+    — prediction market vs risk-neutral P(above); a signal, not arbitrage
+  </span>
+</h2>
+<table style="{table_style}">
+  <thead>
+    <tr>
+      <th style="{th_style}">Threshold</th>
+      <th style="{th_style}">Expiry</th>
+      <th style="{th_style}">Market</th>
+      <th style="{th_style}">Options</th>
+      <th style="{th_style}">Gap (mkt−opt)</th>
+      <th style="{th_style}">Venue</th>
+    </tr>
+  </thead>
+  <tbody>
+{thr_rows}
+  </tbody>
+</table>
+"""
+    else:
+        threshold_section = ""
 
     # Other tracked markets (those that don't fit the Fed cut/hold/raise schema).
     if digest.tracked:
@@ -255,6 +301,7 @@ def _render_html(digest: MarketDigest, subject: str) -> str:
 {movers_section}
 {matrix_section}
 {divergence_section}
+{threshold_section}
 {tracked_section}
 {footer}
 </div>
@@ -308,14 +355,30 @@ def _render_text(digest: MarketDigest, subject: str) -> str:
     material_divs = [d for d in digest.divergences if d.material]
     if material_divs:
         lines.append(
-            f"RELATIVE VALUE vs FED FUNDS FUTURES ({digest.divergence_count}) "
-            "— prediction market vs ZQ-implied; a signal, not arbitrage"
+            f"RELATIVE VALUE vs RATE FUTURES ({digest.divergence_count}) "
+            "— prediction market vs rate-futures-implied; a signal, not arbitrage"
         )
         lines.append("-" * 60)
         for d in material_divs:
             lines.append(
                 f"  {d.meeting} — {d.outcome}: market {_pct(d.market_prob)} vs "
                 f"futures {_pct(d.futures_prob)} ({_signed_pp(d.gap)}) [{d.market_venue}]"
+            )
+        lines.append("")
+
+    # Threshold relative value (market vs options-implied, material gaps only)
+    material_thresholds = [t for t in digest.threshold_divergences if t.material]
+    if material_thresholds:
+        lines.append(
+            f"RELATIVE VALUE vs OPTIONS-IMPLIED ({digest.threshold_divergence_count}) "
+            "— prediction market vs risk-neutral P(above); a signal, not arbitrage"
+        )
+        lines.append("-" * 60)
+        for t in material_thresholds:
+            lines.append(
+                f"  {t.underlying} ≥ ${t.strike:,.0f} ({t.expiry}): "
+                f"market {_pct(t.market_prob)} vs options {_pct(t.derivative_prob)} "
+                f"({_signed_pp(t.gap)}) [{t.market_venue}]"
             )
         lines.append("")
 

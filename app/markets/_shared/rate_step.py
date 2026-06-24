@@ -1,13 +1,15 @@
-"""Pure math: CME 30-Day Fed Funds futures (ZQ) -> FOMC meeting probabilities.
+"""Pure math: an average-overnight-rate futures price -> a central-bank meeting
+distribution over 25bps buckets. This is the "FedWatch" calculation, generalised.
 
-This is the "FedWatch" calculation. A ZQ contract for calendar month *M* settles to
-``100 - average_daily_EFFR(M)``, so ``implied_avg(M) = 100 - price(M)``. An FOMC
-meeting splits its month into days at the current rate and days at the post-meeting
-rate; we solve for the post-meeting rate and convert the implied change into a
-distribution over 25bps buckets.
+A futures contract for calendar month *M* on an overnight rate (EFFR for CME ZQ,
+SOFR for SR1, €STR for the ECB equivalent) settles to ``100 - average_daily_rate(M)``,
+so ``implied_avg(M) = 100 - price(M)``. A policy meeting splits its month into days at
+the current rate and days at the post-meeting rate; we solve for the post-meeting rate
+and convert the implied change into a distribution over 25bps buckets.
 
-Everything here is a deterministic pure function — no I/O. The source layer
-(``app/sources/cme_fedfunds.py``) fetches the prices and current EFFR and feeds them in.
+Everything here is a deterministic pure function — no I/O. A market's source layer
+(e.g. ``app/markets/fed_rates/source.py``) fetches the prices and current rate and
+feeds them in.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from decimal import Decimal
 
 from app.analysis.probability import q6
 
-_STEP = Decimal("0.25")  # assumed uniform FOMC move size (25bps), per FedWatch
+_STEP = Decimal("0.25")  # assumed uniform policy move size (25bps)
 _PAR = Decimal("100")
 
 # Integer move level (in 25bps steps; +hike / -cut) -> human-readable bucket label.
@@ -37,19 +39,19 @@ _ORDER: list[int] = [-2, -1, 0, 1, 2]
 
 
 @dataclass(frozen=True)
-class FedFundsResult:
+class RateStepResult:
     """The futures-implied meeting outcome distribution + the inputs that produced it."""
 
     outcomes: list[str]
     probabilities: list[Decimal]  # aligned to outcomes, sum to ~1
-    r_start: Decimal  # current rate used (EFFR), %
+    r_start: Decimal  # current rate used, %
     r_end: Decimal  # implied post-meeting rate, %
     delta_bps: Decimal  # (r_end - r_start) in basis points, signed
     method: str  # "single_contract" | "two_contract"
 
 
 def implied_average_rate(price: Decimal) -> Decimal:
-    """ZQ price -> implied average daily EFFR for the contract month (= 100 - price)."""
+    """Futures price -> implied average daily overnight rate for the month (= 100 - price)."""
     return _PAR - price
 
 
@@ -94,7 +96,7 @@ def distribution_from_delta(r_start: Decimal, r_end: Decimal) -> list[tuple[str,
     return [(_LEVEL_LABELS[lvl], weights[lvl]) for lvl in _ORDER]
 
 
-def fed_funds_distribution(
+def rate_step_distribution(
     *,
     meeting_date: date,
     price_meeting_month: Decimal,
@@ -102,8 +104,8 @@ def fed_funds_distribution(
     price_next_month: Decimal | None = None,
     next_month_has_meeting: bool = False,
     min_days_after: int = 5,
-) -> FedFundsResult:
-    """Compute the futures-implied distribution for one FOMC meeting.
+) -> RateStepResult:
+    """Compute the futures-implied distribution for one policy meeting.
 
     Day split: the decision is announced on ``meeting_date`` and the new rate takes
     effect the next day, so days 1..meeting_date.day sit at ``r_start`` (n_before) and
@@ -111,9 +113,9 @@ def fed_funds_distribution(
 
     Method selection:
     - **single_contract** (default): solve the within-month blend from the meeting
-      month's ZQ price.
+      month's futures price.
     - **two_contract**: when the meeting is near month-end (``n_after < min_days_after``)
-      the blend is noisy; if the *next* month has no meeting, its ZQ price's implied
+      the blend is noisy; if the *next* month has no meeting, its futures price's implied
       average IS the post-meeting rate, so use it directly. Requires ``price_next_month``.
     """
     days_in_month = calendar.monthrange(meeting_date.year, meeting_date.month)[1]
@@ -148,7 +150,7 @@ def fed_funds_distribution(
     probabilities = [p for _, p in pairs]
     delta_bps = q6((r_end - r_start) * Decimal(100))
 
-    return FedFundsResult(
+    return RateStepResult(
         outcomes=outcomes,
         probabilities=probabilities,
         r_start=q6(r_start),

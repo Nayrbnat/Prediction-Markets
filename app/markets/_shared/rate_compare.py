@@ -1,18 +1,20 @@
-"""Relative value: prediction-market probability vs Fed-funds-futures-implied probability.
+"""Relative value for rate-step markets: prediction-market probability vs the
+futures-implied probability for the SAME central-bank meeting.
 
-Pure functions. Given the tracked observations (which include the ``cme`` futures-implied
-distribution alongside the prediction-market venues), align outcomes onto a canonical Fed
-outcome set, match markets to the same FOMC meeting (by close-date month), and emit the
-signed per-outcome gap ``market − futures``.
+Pure, venue-agnostic. A concrete rate market (Fed, ECB, ...) supplies its own
+label->bucket table (via ``make_canonical``) and its derivative venue string; the
+comparison mechanism here is shared. Outcome buckets are the standard 25bps schema
+emitted by ``rate_step`` (``50+ bps cut`` ... ``50+ bps hike``).
 
-This conflates genuine mispricing with the (small, at the front end) rate risk premium —
-it is decision-support, NOT arbitrage. The caller labels it accordingly.
+This conflates genuine mispricing with the (small, at the front end) rate risk
+premium — it is decision-support, NOT arbitrage. Callers label it accordingly.
 """
 
 from __future__ import annotations
 
 import calendar
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -21,64 +23,50 @@ from app.analysis.changes import probability_change
 from app.models.digest import DivergenceItem
 from app.models.domain import MarketObservation
 
-_FUTURES_VENUE = "cme"
+# Canonical 25bps buckets (also the rate-step source's own labels).
+CUT_BUCKETS = frozenset({"50+ bps cut", "25 bps cut"})
+HIKE_BUCKETS = frozenset({"25 bps hike", "50+ bps hike"})
+HOLD = "No change"
 
 # Timezone-aware sentinel so markets with no close_date sort last without mixing
 # naive/aware datetimes during comparison.
 _FAR_FUTURE = datetime.max.replace(tzinfo=timezone.utc)
 
-# Canonical Fed outcome buckets (also the CME source's own labels).
-# Map each venue's raw outcome label (normalised) onto one of these; unmapped -> dropped.
-_CANONICAL: dict[str, str] = {
-    # CME (our own source)
-    "50+ bps cut": "50+ bps cut",
-    "25 bps cut": "25 bps cut",
-    "no change": "No change",
-    "25 bps hike": "25 bps hike",
-    "50+ bps hike": "50+ bps hike",
-    # Kalshi
-    "fed maintains rate": "No change",
-    "cut 25bps": "25 bps cut",
-    "hike 25bps": "25 bps hike",
-    "cut >25bps": "50+ bps cut",
-    "hike >25bps": "50+ bps hike",
-    # Polymarket
-    "25 bps decrease": "25 bps cut",
-    "25 bps increase": "25 bps hike",
-    "50+ bps decrease": "50+ bps cut",
-    "50+ bps increase": "50+ bps hike",
-}
+Canonical = Callable[[str], str | None]
 
 
-def canonical_outcome(label: str) -> str | None:
-    """Map a venue's raw outcome label onto the canonical bucket, or None if unknown."""
-    return _CANONICAL.get(" ".join(label.lower().split()))
+def make_canonical(table: dict[str, str]) -> Canonical:
+    """Build a label->canonical-bucket mapper from a (normalised) lookup table.
 
+    Lookups are whitespace- and case-normalised; unknown labels map to None (dropped).
+    """
 
-_CUT_BUCKETS = {"50+ bps cut", "25 bps cut"}
-_HIKE_BUCKETS = {"25 bps hike", "50+ bps hike"}
+    def canonical(label: str) -> str | None:
+        return table.get(" ".join(label.lower().split()))
+
+    return canonical
 
 
 def cut_hold_raise(
-    pairs: list[tuple[str, Decimal]],
+    pairs: list[tuple[str, Decimal]], *, canonical: Canonical
 ) -> tuple[Decimal, Decimal, Decimal] | None:
     """Collapse a market's (outcome, probability) pairs into (cut, hold, raise) sums.
 
     Cut = all cut sizes; Hold = no change; Raise = all hike sizes. Returns None when
-    none of the outcomes map to the Fed schema (e.g. a 'number of dissents' market).
+    none of the outcomes map to the rate schema (e.g. a 'number of dissents' market).
     """
     cut = hold = hike = Decimal(0)
     mapped = False
     for outcome, prob in pairs:
-        canon = canonical_outcome(outcome)
+        canon = canonical(outcome)
         if canon is None:
             continue
         mapped = True
-        if canon in _CUT_BUCKETS:
+        if canon in CUT_BUCKETS:
             cut += prob
-        elif canon in _HIKE_BUCKETS:
+        elif canon in HIKE_BUCKETS:
             hike += prob
-        else:  # "No change"
+        else:  # HOLD
             hold += prob
     return (cut, hold, hike) if mapped else None
 
@@ -91,15 +79,17 @@ class _Market:
 
 
 def _meeting_key(close_date: datetime | None) -> tuple[int, int] | None:
-    """Group markets onto the same FOMC meeting by close-date (year, month)."""
+    """Group markets onto the same meeting by close-date (year, month)."""
     return (close_date.year, close_date.month) if close_date is not None else None
 
 
-def _group_markets(observations: list[MarketObservation]) -> dict[tuple[str, str], _Market]:
+def _group_markets(
+    observations: list[MarketObservation], canonical: Canonical
+) -> dict[tuple[str, str], _Market]:
     """Collapse observations into one _Market per (venue, market_key) with canonical probs."""
     markets: dict[tuple[str, str], _Market] = {}
     for obs in observations:
-        canon = canonical_outcome(obs.outcome)
+        canon = canonical(obs.outcome)
         if canon is None:
             continue
         key = (obs.venue, obs.market_key)
@@ -112,16 +102,20 @@ def _group_markets(observations: list[MarketObservation]) -> dict[tuple[str, str
 
 
 def compare(
-    observations: list[MarketObservation], *, gap_threshold: Decimal
+    observations: list[MarketObservation],
+    *,
+    canonical: Canonical,
+    derivative_venue: str,
+    gap_threshold: Decimal,
 ) -> list[DivergenceItem]:
     """Emit signed market−futures gaps per (meeting, prediction-venue, canonical outcome).
 
-    Only meetings that have BOTH a futures (``cme``) distribution and at least one
-    prediction-market distribution produce items. Sorted by meeting, then |gap| desc.
+    Only meetings that have BOTH a derivative (``derivative_venue``) distribution and at
+    least one prediction-market distribution produce items. Sorted by meeting, then
+    |gap| desc.
     """
-    markets = _group_markets(observations)
+    markets = _group_markets(observations, canonical)
 
-    # Bucket markets by FOMC meeting (year, month).
     by_meeting: dict[tuple[int, int], list[_Market]] = defaultdict(list)
     for m in markets.values():
         mk = _meeting_key(m.close_date)
@@ -130,12 +124,12 @@ def compare(
 
     items: list[DivergenceItem] = []
     for (year, month), mkts in by_meeting.items():
-        futures = next((m for m in mkts if m.venue == _FUTURES_VENUE), None)
+        futures = next((m for m in mkts if m.venue == derivative_venue), None)
         if futures is None:
-            continue  # no futures-implied distribution for this meeting -> nothing to compare
+            continue  # no derivative distribution for this meeting -> nothing to compare
         meeting_label = f"{calendar.month_name[month]} {year}"
         for m in mkts:
-            if m.venue == _FUTURES_VENUE:
+            if m.venue == derivative_venue:
                 continue
             for canon, market_prob in m.probs.items():
                 fut_prob = futures.probs.get(canon)
@@ -157,6 +151,5 @@ def compare(
                     )
                 )
 
-    # Meeting ascending, then largest |gap| first (biggest signal per meeting on top).
     items.sort(key=lambda it: (it.close_date or _FAR_FUTURE, -abs(it.gap)))
     return items

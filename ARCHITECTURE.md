@@ -278,8 +278,39 @@ Money is `Decimal`; venues/sides are `Literal`/`enum`; timestamps are UTC.
 
 ---
 
+## 8a. Vertical market modules (`app/markets/`) — relative-value derivatives
+
+The relative-value capability (compare a prediction market against a derivative pricing the
+**same** event) is organised as **vertical feature modules**, one folder per market, rather than
+spread across the horizontal layers. This is a deliberate, owner-approved deviation from the
+strict "I/O in `sources/`, math in `analysis/`" rule in §3 — SRP/SLAP are preserved **within**
+each folder (file-per-concern), and all network I/O still goes through `core/http`, all math is
+still pure.
+
+```
+app/markets/
+  _shared/        registry (DerivativeMarket protocol), rate_step (FedWatch math),
+                  rate_futures (meeting orchestration), rate_compare (rate divergence),
+                  density (Breeden-Litzenberger), deribit (crypto options I/O),
+                  threshold_compare + threshold_parse (threshold divergence)
+  fed_rates/      source.py · analysis.py · divergence.py · register.py   (venue: cme)
+  btc_price/      source.py · divergence.py · register.py                 (venue: deribit)
+  eth_price/      source.py · divergence.py · register.py                 (venue: deribit)
+  ecb_rates/      source.py · divergence.py · register.py                 (venue: estr)
+```
+
+Each market's `register.py` defines a `DerivativeMarket` descriptor (venue, signals, config
+gating, client base URLs, `discover`) and calls `register(...)`. Importing `app.markets` populates
+the registry; the **gateway** and **discovery_service** iterate it generically — no per-market
+branches. Persistence/pricing/digest are unchanged (`venue` is free TEXT). Markets are config-gated
+and ship **disabled by default**.
+
 ## 9. Extensibility points
 
+- **Add a relative-value market:** create `app/markets/<name>/` (source = I/O, the relevant pure
+  comparator, `register.py` descriptor), add its venue to the `Venue` literal + config, and import
+  its `register` in `app/markets/__init__.py`. Reuse `_shared/` (rate-step for central banks,
+  density + threshold for options). The gateway/discovery/digest pick it up via the registry.
 - **Add a venue:** add a `sources/<venue>.py` returning the shared `MarketRef`/`OrderBookTop` types, then teach `discovery_service`/`reconcile` to pair it. Analysis, persistence, and API are untouched.
 - **Swap the store:** implement `MarketRepository` for another backend; inject it. Callers depend on the ABC.
 - **(v2) Add the LLM:** implement `LLMProvider`, point config at it, flip `llm_synthesis` from `null` to the validated synthesis. Nothing else changes.

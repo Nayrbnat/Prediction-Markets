@@ -55,6 +55,23 @@ class DivergenceItem(BaseModel):
     close_date: datetime | None = None
 
 
+class ThresholdDivergence(BaseModel):
+    """Relative value for a price-threshold event: a prediction-market probability vs an
+    options-implied (risk-neutral) probability that the SAME underlying finishes above the
+    SAME strike by the SAME expiry. ``gap`` is signed (market − derivative); it is a signal
+    to investigate, NOT arbitrage (the derivative prob is risk-neutral, not real-world)."""
+
+    underlying: str  # e.g. "BTC"
+    strike: Decimal  # e.g. 150000
+    expiry: str  # e.g. "Dec 2026"
+    market_venue: str  # polymarket | kalshi
+    market_prob: Decimal = Field(ge=0, le=1)  # P(above) from the prediction market
+    derivative_prob: Decimal = Field(ge=0, le=1)  # P(above) implied by options
+    gap: Decimal  # signed: market_prob − derivative_prob
+    material: bool = False
+    close_date: datetime | None = None
+
+
 class SourceProbs(BaseModel):
     """One source's cut/hold/raise probabilities for a single FOMC meeting."""
 
@@ -84,6 +101,8 @@ class MarketDigest(BaseModel):
     meeting_matrices: list[MeetingMatrix] = Field(default_factory=list)
     tracked: list[TrackedMarket] = Field(default_factory=list)
     divergences: list[DivergenceItem] = Field(default_factory=list)
+    threshold_divergences: list[ThresholdDivergence] = Field(default_factory=list)
     mover_count: int = 0
     tracked_count: int = 0
-    divergence_count: int = 0  # count of MATERIAL divergences (|gap| >= threshold)
+    divergence_count: int = 0  # count of MATERIAL rate divergences (|gap| >= threshold)
+    threshold_divergence_count: int = 0  # count of MATERIAL threshold divergences

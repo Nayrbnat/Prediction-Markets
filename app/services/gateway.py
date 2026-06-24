@@ -1,5 +1,9 @@
 """Market-data gateway: a thin façade over the per-venue source clients so the
 services depend on one small interface (and tests can supply a fake).
+
+Base prediction-market venues (Polymarket, Kalshi) are queried for every topic.
+Derivative-implied markets (Fed rates, BTC, ...) come from the registry in
+``app/markets`` and are discovered generically — no per-market branches here.
 """
 
 from __future__ import annotations
@@ -7,17 +11,23 @@ from __future__ import annotations
 import asyncio
 from typing import Protocol
 
+import httpx
+
 from app.config import Settings
 from app.core.errors import SourceError
 from app.core.http import make_client
 from app.core.logging import get_logger
+from app.markets import registered_markets
+from app.markets._shared.registry import DerivativeMarket
 from app.models.domain import MarketRef, OrderBookTop
 from app.models.provenance import Venue
-from app.sources import cme_fedfunds, kalshi, polymarket_clob, polymarket_gamma
+from app.sources import kalshi, polymarket_clob, polymarket_gamma
 
 logger = get_logger(__name__)
 
-_ALL_VENUES: list[Venue] = ["polymarket", "kalshi", "cme"]
+_BASE_VENUES: list[Venue] = ["polymarket", "kalshi"]
+# All venues = base prediction markets + every registered derivative market's venue.
+_ALL_VENUES: list[Venue] = [*_BASE_VENUES, *(m.venue for m in registered_markets())]
 
 
 class Gateway(Protocol):
@@ -38,9 +48,12 @@ class HttpGateway:
         self._gamma = make_client(settings.gamma_base_url)
         self._clob = make_client(settings.clob_base_url)
         self._kalshi = make_client(settings.kalshi_base_url)
-        # CME source reads two free endpoints: Yahoo (ZQ prices) + NY Fed (EFFR).
-        self._cme_yahoo = make_client(settings.yahoo_chart_base_url)
-        self._cme_nyfed = make_client(settings.nyfed_rates_base_url)
+        # Derivative markets from the registry: build each one's clients once.
+        self._markets: list[DerivativeMarket] = registered_markets()
+        self._market_clients: dict[str, dict[str, httpx.AsyncClient]] = {
+            m.name: {key: make_client(url) for key, url in m.base_urls(settings).items()}
+            for m in self._markets
+        }
 
     async def discover(
         self, topic: str, *, venues: list[Venue] | None = None, limit: int = 50
@@ -70,22 +83,21 @@ class HttpGateway:
                 )
             )
             labels.append("kalshi")
-        if (
-            "cme" in want
-            and self._settings.cme_enabled
-            and topic in self._settings.cme_topic_set
-        ):
-            tasks.append(
-                cme_fedfunds.discover(
-                    self._cme_yahoo,
-                    self._cme_nyfed,
-                    topic,
-                    meetings=self._settings.fomc_meeting_dates,
-                    horizon=self._settings.cme_meeting_horizon,
-                    limit=limit,
+        for market in self._markets:
+            if (
+                market.venue in want
+                and market.enabled(self._settings)
+                and market.serves_topic(topic, self._settings)
+            ):
+                tasks.append(
+                    market.discover(
+                        self._market_clients[market.name],
+                        self._settings,
+                        topic,
+                        limit=limit,
+                    )
                 )
-            )
-            labels.append("cme")
+                labels.append(market.venue)
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         refs: list[MarketRef] = []
@@ -106,11 +118,7 @@ class HttpGateway:
             return None
 
     async def aclose(self) -> None:
-        await asyncio.gather(
-            self._gamma.aclose(),
-            self._clob.aclose(),
-            self._kalshi.aclose(),
-            self._cme_yahoo.aclose(),
-            self._cme_nyfed.aclose(),
-            return_exceptions=True,
-        )
+        clients: list[httpx.AsyncClient] = [self._gamma, self._clob, self._kalshi]
+        for cmap in self._market_clients.values():
+            clients.extend(cmap.values())
+        await asyncio.gather(*(c.aclose() for c in clients), return_exceptions=True)

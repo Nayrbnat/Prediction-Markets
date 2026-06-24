@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.analysis.divergence import canonical_outcome, compare, cut_hold_raise
+from app.markets.fed_rates.divergence import canonical_outcome, compare, cut_hold_raise
 from app.models.domain import MarketObservation
 
 SEP = datetime(2026, 9, 16, tzinfo=timezone.utc)
