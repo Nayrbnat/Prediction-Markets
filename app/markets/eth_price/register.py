@@ -6,6 +6,7 @@ import httpx
 
 from app.config import Settings
 from app.markets._shared.registry import register
+from app.markets._shared.threshold_parse import targets_from_refs
 from app.markets.eth_price import source
 from app.models.domain import MarketRef
 from app.models.provenance import Venue
@@ -34,10 +35,15 @@ class EthPriceMarket:
         topic: str,
         *,
         limit: int,
+        prediction_refs: list[MarketRef],
     ) -> list[MarketRef]:
-        return await source.discover(
-            clients["deribit"], topic, targets=settings.eth_target_list, limit=limit
+        # Dynamic targeting: derive (strike, expiry) from the live Polymarket/Kalshi ETH
+        # markets discovered this run; any configured ETH_TARGETS supplement them.
+        derived = targets_from_refs(
+            prediction_refs, underlying="ETH", aliases=("eth", "ether", "ethereum")
         )
+        targets = sorted({*derived, *settings.eth_target_list})
+        return await source.discover(clients["deribit"], topic, targets=targets, limit=limit)
 
 
 register(EthPriceMarket())

@@ -48,8 +48,14 @@ class DerivativeMarket(Protocol):
         topic: str,
         *,
         limit: int,
+        prediction_refs: list[MarketRef],
     ) -> list[MarketRef]:
-        """Fetch + compute the derivative-implied MarketRefs for ``topic``."""
+        """Fetch + compute the derivative-implied MarketRefs for ``topic``.
+
+        ``prediction_refs`` are the base prediction-market (Polymarket/Kalshi) refs already
+        discovered for this topic this run, so dynamic markets (crypto) can derive their
+        query targets from live markets. Markets that don't need them (rate markets) ignore it.
+        """
         ...
 
 

@@ -6,6 +6,7 @@ import httpx
 
 from app.config import Settings
 from app.markets._shared.registry import register
+from app.markets._shared.threshold_parse import targets_from_refs
 from app.markets.btc_price import source
 from app.models.domain import MarketRef
 from app.models.provenance import Venue
@@ -34,10 +35,15 @@ class BtcPriceMarket:
         topic: str,
         *,
         limit: int,
+        prediction_refs: list[MarketRef],
     ) -> list[MarketRef]:
-        return await source.discover(
-            clients["deribit"], topic, targets=settings.btc_target_list, limit=limit
-        )
+        # Dynamic targeting: derive (strike, expiry) from the live Polymarket/Kalshi BTC
+        # markets discovered this run; any configured BTC_TARGETS supplement them.
+        targets = sorted({
+            *targets_from_refs(prediction_refs, underlying="BTC", aliases=("btc", "bitcoin")),
+            *settings.btc_target_list,
+        })
+        return await source.discover(clients["deribit"], topic, targets=targets, limit=limit)
 
 
 register(BtcPriceMarket())

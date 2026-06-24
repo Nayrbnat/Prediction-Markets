@@ -37,6 +37,7 @@ class EcbRatesMarket:
         topic: str,
         *,
         limit: int,
+        prediction_refs: list[MarketRef],  # unused (rate markets use config meeting dates)
     ) -> list[MarketRef]:
         return await source.discover(
             clients["yahoo"],
