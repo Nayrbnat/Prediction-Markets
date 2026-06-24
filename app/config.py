@@ -116,6 +116,14 @@ class Settings(BaseSettings):
     ecb_meetings: str = ""  # CSV of ISO ECB Governing Council decision dates
     ecb_rates_base_url: str = "https://data-api.ecb.europa.eu"  # ECB SDMX (free) for €STR
 
+    # ---- Company-bet scan (discovery/listing only, separate 5-day cron) -
+    company_scan_enabled: bool = False
+    # Kalshi categories to enumerate for company bets (CSV); "Companies" holds the rich set.
+    company_kalshi_categories: str = "Companies"
+    # Polymarket company-name searches (CSV).
+    company_names: str = "Nvidia,Tesla,Apple,Microsoft,Amazon,Google,Meta,OpenAI,SpaceX"
+    company_scan_limit: int = 150  # max bets to list (safety cap)
+
     # ---- SMTP (leave blank to use ConsoleEmailSender) -------------------
     smtp_host: str = ""
     smtp_port: int = 587
@@ -170,6 +178,14 @@ class Settings(BaseSettings):
     def ecb_meeting_dates(self) -> list[date]:
         """Parsed ECB Governing Council decision dates (skips malformed tokens)."""
         return _dates(self.ecb_meetings)
+
+    @property
+    def company_kalshi_category_list(self) -> list[str]:
+        return _csv(self.company_kalshi_categories)
+
+    @property
+    def company_name_list(self) -> list[str]:
+        return _csv(self.company_names)
 
     @property
     def btc_topic_set(self) -> set[str]:
