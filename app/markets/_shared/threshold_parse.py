@@ -14,6 +14,7 @@ market phrasings before relying on it.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -49,6 +50,9 @@ _SKIP_WORDS = (
 # A strike must be $-anchored or carry a k/M suffix — avoids matching bare years (2026).
 _DOLLAR = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?)")
 _SUFFIX = re.compile(r"\b([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM])\b")
+# Bare comma-grouped or >=4-digit number (e.g. Kalshi index "27,300 or above" — no $).
+# Only used on short OUTCOME labels (strike-only), never on titles that contain a year.
+_BARE = re.compile(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,})(?:\.[0-9]+)?")
 
 
 def _to_decimal(text: str) -> Decimal | None:
@@ -74,6 +78,19 @@ def parse_strike(text: str) -> Decimal | None:
             num *= Decimal(1_000_000)
         return num
     return None
+
+
+def parse_outcome_strike(text: str) -> Decimal | None:
+    """Strike from a short OUTCOME label: $-anchored/suffixed first, else a bare number.
+
+    Outcome labels are strike-only (e.g. "$50,000 or above", "27,300 or above"), so a bare
+    number is safe here — unlike titles, which contain a year. Falls through to None.
+    """
+    dollar = parse_strike(text)
+    if dollar is not None:
+        return dollar
+    m = _BARE.search(text)
+    return _to_decimal(m.group(1).replace(",", "")) if m else None
 
 
 def is_terminal_above(text: str) -> bool:
@@ -126,7 +143,7 @@ def make_parser(
             return None  # affirmative side only — the 'No' row is the complement
         if not is_terminal_above(text):
             return None  # skip barrier/touch/max/downside markets (§13)
-        strike = parse_strike(obs.outcome) or parse_strike(obs.event_title)
+        strike = parse_outcome_strike(obs.outcome) or parse_strike(obs.event_title)
         if strike is None:
             return None
         return ThresholdPoint(
@@ -150,15 +167,18 @@ def targets_from_refs(
     *,
     underlying: str,
     aliases: tuple[str, ...],
+    token_fn: Callable[[datetime], str] = deribit_token,
     prediction_venues: tuple[str, ...] = _DEFAULT_PREDICTION_VENUES,
 ) -> list[tuple[Decimal, str]]:
-    """Derive ``(strike, deribit_expiry_token)`` targets from live prediction-market refs.
+    """Derive ``(strike, expiry_token)`` targets from live prediction-market refs.
 
     The dynamic-targeting counterpart to static config targets: scan the Polymarket/Kalshi
-    crypto markets discovered this run, keep the TERMINAL above-thresholds for ``underlying``
-    (same terminal/barrier/strike rules as the comparator), and turn each into the Deribit
-    (strike, expiry-token) to query. Deduped + sorted. A target whose date/strike Deribit
-    does not list simply yields no curve downstream and is skipped — never fabricated.
+    markets discovered this run, keep the TERMINAL above-thresholds for ``underlying`` (same
+    terminal/barrier/strike rules as the comparator), and turn each into the (strike, expiry
+    token) the derivative source queries. ``token_fn`` formats the close date into that
+    source's token (Deribit ``26JUN26`` for crypto, CBOE ``YYMMDD`` for equities). Deduped +
+    sorted. A target the derivative venue doesn't list yields no curve downstream and is
+    skipped — never fabricated.
     """
     targets: set[tuple[Decimal, str]] = set()
     for ref in refs:
@@ -172,8 +192,8 @@ def targets_from_refs(
                 continue
             if not is_terminal_above(text):
                 continue
-            strike = parse_strike(outcome) or parse_strike(ref.event_title)
+            strike = parse_outcome_strike(outcome) or parse_strike(ref.event_title)
             if strike is None:
                 continue
-            targets.add((strike, deribit_token(ref.close_date)))
+            targets.add((strike, token_fn(ref.close_date)))
     return sorted(targets)

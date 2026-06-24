@@ -16,5 +16,6 @@ from app.markets.btc_price import register as _btc_price_register  # noqa: F401
 from app.markets.ecb_rates import register as _ecb_rates_register  # noqa: F401
 from app.markets.eth_price import register as _eth_price_register  # noqa: F401
 from app.markets.fed_rates import register as _fed_rates_register  # noqa: F401
+from app.markets.nasdaq_price import register as _nasdaq_price_register  # noqa: F401
 
 __all__ = ["registered_markets"]
