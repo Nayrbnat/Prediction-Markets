@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import httpx
 import pandas as pd
@@ -22,22 +23,53 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 HOUR = 3600
 
-# Curated watch-list: deals + macro catalysts that feed bottom-up theses. (query, title-filter)
-WATCH = [
-    ("nebius acquired", ("nebius",)),
-    ("viking therapeutics acquired", ("viking",)),
-    ("gitlab acquired", ("gitlab",)),
-    ("zoom acquired", ("zoom",)),
-    ("paypal acquired", ("paypal",)),
-    ("snapchat acquired", ("snapchat",)),
-    ("BP acquired", ("bp ",)),
-    ("warner bros", ("warner bros",)),
-    ("paramount warner", ("warner bros",)),
-    ("US recession 2026", ("recession",)),
-    ("government shutdown", ("shutdown",)),
-    ("fed rate cut 2026", ("rate cut", "fed decision")),
-    ("tariff china", ("tariff", "china")),
-]
+# Sector watch-list for bottom-up mosaic use. Each term is BOTH a search query and a
+# word-boundary title filter (so "sap" != "soap", "meta" != "metaverse"). A market is
+# bucketed into the first sector (in this order) whose term matches its title.
+SECTORS: dict[str, list[str]] = {
+    "Tech / AI mega-cap": [
+        "nvidia", "apple", "microsoft", "google", "alphabet", "meta", "amazon", "tesla",
+        "openai", "anthropic", "perplexity", "tiktok", "spacex", "xai", "bytedance",
+        "largest company", "best ai", "ai model", "agi",
+    ],
+    "Luxury": [
+        "lvmh", "hermes", "louis vuitton", "gucci", "kering", "luxury", "chanel",
+        "rolex", "prada", "richemont", "birkin", "cartier",
+    ],
+    "Alcohol / spirits": [
+        "diageo", "pernod", "pernod ricard", "constellation brands", "anheuser",
+        "budweiser", "heineken", "molson", "alcohol", "spirits", "whiskey", "whisky",
+    ],
+    "Enterprise software": [
+        "adobe", "constellation software", "salesforce", "oracle", "sap", "figma",
+        "canva", "servicenow", "workday", "atlassian", "datadog", "snowflake",
+        "databricks", "intuit", "shopify",
+    ],
+    "Cybersecurity": [
+        "palo alto", "crowdstrike", "fortinet", "zscaler", "sentinelone",
+        "cybersecurity", "cyberark", "okta", "cloudflare", "darktrace",
+    ],
+}
+
+# Title patterns that mean the match is NOT a corporate/fundamental tile (sports, esports,
+# entertainment, people) — e.g. "KT Wiz" (baseball), "Shopify Rebellion" (esports), a movie,
+# a person named Chanel. Drop these so a name-collision never masquerades as a sector tile.
+_BLOCK = re.compile(
+    r"\bvs\.?\b|\bkbo\b|valorant|\bbo[35]\b|\bvcl\b|wears prada|president of|"
+    r"\bfilm\b|\bmovie\b|\bacademy\b|\bleague\b|\bmatch\b|grand prix",
+    re.IGNORECASE,
+)
+
+
+def _sector_of(title: str) -> str | None:
+    if _BLOCK.search(title):
+        return None
+    low = title.lower()
+    for sector, terms in SECTORS.items():
+        for t in terms:
+            if re.search(r"\b" + re.escape(t) + r"\b", low):
+                return sector
+    return None
 
 
 def _as_list(v: object) -> list:
@@ -57,26 +89,34 @@ def _num(v: object) -> float:
         return 0.0
 
 
-async def _best_market(client: httpx.AsyncClient, query: str, filt: tuple[str, ...]) -> dict | None:
-    r = await client.get(f"{GAMMA}/public-search",
-                         params={"q": query, "limit_per_type": "100", "events_status": "active"})
-    if r.status_code != 200:
-        return None
-    best = None
-    for ev in r.json().get("events", []) or []:
-        for m in ev.get("markets", []) or []:
-            if bool(m.get("closed", False)):
-                continue
-            title = m.get("question") or ev.get("title") or ""
-            if not any(h in title.lower() for h in filt):
-                continue
-            toks = _as_list(m.get("clobTokenIds"))
-            if len(toks) != 2:
-                continue
-            vol = _num(m.get("volumeNum") or m.get("volume"))
-            if best is None or vol > best["vol"]:
-                best = {"title": title, "token": str(toks[0]), "vol": vol}
-    return best
+async def _gather(client: httpx.AsyncClient) -> dict[str, dict]:
+    """Search every sector term, bucket each active binary market by sector. token -> tile-stub."""
+    out: dict[str, dict] = {}
+    terms = {t for terms in SECTORS.values() for t in terms}
+    for q in sorted(terms):
+        try:
+            r = await client.get(f"{GAMMA}/public-search",
+                                 params={"q": q, "limit_per_type": "100", "events_status": "active"})
+        except httpx.HTTPError:
+            continue
+        if r.status_code != 200:
+            continue
+        for ev in r.json().get("events", []) or []:
+            for m in ev.get("markets", []) or []:
+                if bool(m.get("closed", False)):
+                    continue
+                title = m.get("question") or ev.get("title") or ""
+                sector = _sector_of(title)
+                if not sector:
+                    continue
+                toks = _as_list(m.get("clobTokenIds"))
+                if len(toks) != 2:
+                    continue
+                tok = str(toks[0])
+                vol = _num(m.get("volumeNum") or m.get("volume"))
+                if tok not in out or vol > out[tok]["vol"]:
+                    out[tok] = {"title": title, "token": tok, "vol": vol, "sector": sector}
+    return out
 
 
 async def _hourly(client: httpx.AsyncClient, token: str) -> pd.Series:
@@ -125,40 +165,46 @@ def _read(now: float, d7: float | None, d30: float | None, vol: float) -> str:
     return f"{int(round(now*100))}% and {arrow} -> {conf}"
 
 
+TOP_PER_SECTOR = 12
+
+
 async def run() -> None:
-    rows = []
     async with httpx.AsyncClient(timeout=30) as client:
-        for query, filt in WATCH:
-            mk = await _best_market(client, query, filt)
-            if not mk:
-                print(f"   (no live market for {query!r})")
-                continue
-            s = await _hourly(client, mk["token"])
-            if s.empty:
-                continue
-            rows.append({"title": mk["title"], "vol": mk["vol"], "now": float(s.iloc[-1]),
-                         "d7": _delta(s, 7 * 24), "d30": _delta(s, 30 * 24)})
+        stubs = await _gather(client)
+        # group by sector, keep the deepest TOP_PER_SECTOR per sector, then fetch history
+        by_sector: dict[str, list[dict]] = {s: [] for s in SECTORS}
+        for st in stubs.values():
+            by_sector[st["sector"]].append(st)
+        tiles: dict[str, list[dict]] = {}
+        for sector, lst in by_sector.items():
+            lst.sort(key=lambda z: z["vol"], reverse=True)
+            picked = []
+            for st in lst[:TOP_PER_SECTOR]:
+                s = await _hourly(client, st["token"])
+                if s.empty:
+                    continue
+                picked.append({**st, "now": float(s.iloc[-1]),
+                               "d7": _delta(s, 7 * 24), "d30": _delta(s, 30 * 24)})
+            tiles[sector] = picked
 
-    # de-dupe identical titles, keep deepest
-    uniq: dict[str, dict] = {}
-    for r in rows:
-        if r["title"] not in uniq or r["vol"] > uniq[r["title"]]["vol"]:
-            uniq[r["title"]] = r
-
-    print("\n" + "=" * 96)
-    print("MOSAIC TILES — directional reads (level + momentum + credibility), NOT a quant signal")
-    print("=" * 96)
-    print(f"{'cred':8}  {'now':>4}  {'Δ7d':>6}  {'Δ30d':>6}   directional read / where to dig")
-    print("-" * 96)
-    for r in sorted(uniq.values(), key=lambda z: z["vol"], reverse=True):
-        d7 = f"{r['d7']*100:+.0f}pp" if r["d7"] is not None else "  n/a"
-        d30 = f"{r['d30']*100:+.0f}pp" if r["d30"] is not None else "  n/a"
-        print(f"{_credibility(r['vol'])}  {int(round(r['now']*100)):>3}%  {d7:>6}  {d30:>6}   "
-              f"{r['title'][:54]}")
-        print(f"{'':8}  -> {_read(r['now'], r['d7'], r['d30'], r['vol'])}")
-    print("-" * 96)
-    print("Use: a DEEP tile that DISAGREES with your bottom-up view is the highest-value one — it")
-    print("tells you the crowd sees something you don't (or vice versa). Thin tiles = weak hints only.")
+    print("\n" + "=" * 100)
+    print("MOSAIC TILES by sector — directional reads (level + momentum + credibility), NOT a quant signal")
+    print("=" * 100)
+    for sector in SECTORS:
+        picked = tiles.get(sector, [])
+        print(f"\n### {sector}  ({len(picked)} live market{'s' if len(picked) != 1 else ''})")
+        if not picked:
+            print("    (no live Polymarket markets — the crowd offers NO tile here; rely on your own work)")
+            continue
+        for r in sorted(picked, key=lambda z: z["vol"], reverse=True):
+            d7 = f"{r['d7']*100:+.0f}pp" if r["d7"] is not None else " n/a"
+            d30 = f"{r['d30']*100:+.0f}pp" if r["d30"] is not None else " n/a"
+            print(f"  [{_credibility(r['vol'])}] {int(round(r['now']*100)):>3}%  7d {d7:>6}  30d {d30:>6}  "
+                  f"| {r['title'][:62]}")
+    print("\n" + "-" * 100)
+    print("Read: gate on credibility (DEEP/solid = real crowd money; THIN = a whisper). The highest-value")
+    print("tile is a DEEP one that DISAGREES with your bottom-up view. Mind resolution clauses (a falling")
+    print("'acquired before 2027' can be time-decay, not a weakening thesis).")
 
 
 if __name__ == "__main__":
