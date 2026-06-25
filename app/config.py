@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     company_names: str = "Nvidia,Tesla,Apple,Microsoft,Amazon,Google,Meta,OpenAI,SpaceX"
     company_scan_limit: int = 150  # max bets to list (safety cap)
 
+    # ---- Sector watch-list (mosaic tiles -> daily digest movers) --------
+    # CSV of Polymarket /public-search topics for the sectors followed bottom-up
+    # (e.g. "best ai model,largest company,databricks ipo,palo alto,diageo").
+    # Auto-merged into BOTH the ingest set (discovered daily) and the high-priority
+    # set (tracked), so any move >= mover_threshold surfaces in the daily digest.
+    # Empty by default — purely opt-in, no effect on existing behaviour until set.
+    sector_topics: str = ""
+
     # ---- SMTP (leave blank to use ConsoleEmailSender) -------------------
     smtp_host: str = ""
     smtp_port: int = 587
@@ -142,12 +150,18 @@ class Settings(BaseSettings):
 
     # ---- Parsed views ---------------------------------------------------
     @property
+    def sector_topic_list(self) -> list[str]:
+        return _csv(self.sector_topics)
+
+    @property
     def topics(self) -> list[str]:
-        return _csv(self.ingest_topics)
+        # Sector watch-list topics are discovered alongside the configured ingest topics.
+        return list(dict.fromkeys(_csv(self.ingest_topics) + self.sector_topic_list))
 
     @property
     def high_priority(self) -> list[str]:
-        return _csv(self.high_priority_topics)
+        # Sector watch-list topics are always tracked so their moves reach the digest.
+        return list(dict.fromkeys(_csv(self.high_priority_topics) + self.sector_topic_list))
 
     @property
     def categories(self) -> dict[str, str]:
