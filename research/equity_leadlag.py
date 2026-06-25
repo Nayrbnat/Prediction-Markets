@@ -45,7 +45,7 @@ import httpx
 import numpy as np
 import pandas as pd
 
-from research.leadlag import _granger_p, _xcorr_lead, HOUR
+from research._common import _granger_p, _xcorr_lead, HOUR
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"

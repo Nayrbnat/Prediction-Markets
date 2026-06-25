@@ -61,13 +61,20 @@ volume = USD total; PM counts include per-outcome rows of multi-outcome events, 
 
 ## 2. Segment-by-segment feasibility
 
-### A. M&A / deal completion — ★ most feasible
-- **Liquid** (median ~$87k, ~96% alive) and has a **clean, low-risk-premium derivative**: the merger-arb
-  spread implies `P(close) ≈ (price_now − downside) / (offer − downside)`. Compare to the PM's P(deal closes).
-- Free data: target stock price (Yahoo, same client we already use for ZQ/ESR), offer terms are public.
-- **Monetization:** (i) as a *signal* — flag when the PM's deal probability diverges from the arb-implied one;
-  (ii) lead-lag — equity/options desks price deals fast; the PM likely lags (same pattern as crypto).
-- Caveat: deal outcomes are idiosyncratic (regulatory/antitrust); the "premium" is small but jump risk is real.
+### A. M&A / deal completion — ⚠️ DOWNGRADED after empirical test (see §6)
+- *Original claim:* liquid (median ~$87k, ~96% alive) with a clean merger-arb derivative
+  `P(close) ≈ (price_now − downside) / (offer − downside)` to compare to the PM's P(deal closes).
+- **Correction (2026-06-25, `research/merger_arb.py`):** the liquid Polymarket "M&A" markets are
+  overwhelmingly acquisition **RUMOR** markets ("Will X be acquired before 2027?"), **not announced
+  deals**. Classic merger-arb needs an *announced offer* (a defined spread); those barely exist here.
+  For un-announced targets the stock trades on fundamentals, so the takeover component is a tiny slice
+  of hourly variance → **contemporaneous corr(ΔPM, Δstock) ≈ 0** for 7 of 8 public targets (the same
+  signal-to-noise wall as the macro/SPY test). The one genuine contested deal (Warner Bros / WBD)
+  shows a *weak, unproven* hint the PM leads the stock (Granger PM→stock p=0.035, but corr n.s., n=127).
+- **Net:** as a continuous signal, M&A is **not** demonstrated and the arb precondition (announced
+  terms) is rare on Polymarket. Still the best *theoretical* niche, but gated on (i) finding announced
+  deals and (ii) accumulating history — not the easy win the original framing implied.
+- Caveat: deal outcomes are idiosyncratic (regulatory/antitrust); jump risk is real.
 
 ### B. Stock-price / market-cap thresholds — feasible only for the liquid subset
 - The **exact machinery we already built** transfers: equity options → Breeden-Litzenberger / delta digital
@@ -124,6 +131,35 @@ derivative"**: M&A completion, and the liquid mega-cap price/race markets.
 Deribit/CBOE). No new architecture.
 
 ---
+
+## 6. Empirical merger/takeover lead-lag test (2026-06-25, `research/merger_arb.py`)
+
+Tested whether ΔPM(acquisition-prob) leads or lags the target stock for the 8 liquid Polymarket
+acquisition markets whose target is a public company (NBIS, VKTX, GTLB, ZM, PYPL, SNAP, BP, WBD).
+Hourly PM (`/prices-history`) vs hourly stock (Yahoo). Convention: lag>0 stock leads PM.
+
+| Target | PM now | corr(ΔPM,Δstk) | p | peak lag | Granger stk→PM | Granger PM→stk |
+|---|---|---|---|---|---|---|
+| Viking (VKTX) | 0.36 | +0.07 | 0.41 | −4 | 0.92 | 0.71 |
+| Nebius (NBIS) | 0.14 | +0.02 | 0.80 | +6 | 0.046 | 0.47 |
+| Zoom (ZM) | 0.15 | −0.00 | 0.99 | +3 | 0.56 | 0.79 |
+| Snap (SNAP) | 0.20 | −0.05 | 0.58 | +2 | 0.13 | 0.49 |
+| BP (BP) | 0.12 | −0.04 | 0.66 | +2 | 0.17 | 0.33 |
+| PayPal (PYPL) | 0.21 | −0.07 | 0.47 | +2 | 0.0057 | 0.41 |
+| GitLab (GTLB) | 0.21 | n/a (flat PM) | — | — | — | — |
+| **Warner Bros (WBD)** | **0.82** | **+0.11** | 0.21 | −3 | 0.20 | **0.035** |
+
+**Read:** contemporaneous corr ≈ 0 everywhere (all p>0.2) — for *un-announced* targets the stock is
+not a deal-probability instrument, so there is nothing to lead/lag (same wall as the macro/SPY test).
+The scattered Granger hits (NBIS, PYPL) sit on top of *zero* contemporaneous co-movement → noise
+(3 of 16 tests; multiple comparisons). The only genuinely announced/contested deal, **WBD**, is the
+one case with a positive contemporaneous tilt and a one-sided Granger hint that the **PM leads the
+stock** (PM→stock p=0.035) — suggestive but unproven (n=127, single deal, corr n.s.).
+
+**Conclusion:** merger-arb-as-signal is **not** established on free data, and the precondition
+(announced deals with public terms) is rare on Polymarket. The path forward, if pursued, is to
+**watch announced deals specifically** (WBD-type), accumulate their hourly history, and re-test —
+the same forward-accumulation prescription the equity lead-lag study reached.
 
 ## 5. Sources
 - Pew Research, *Trading volume on prediction markets has soared* (2026) — sports/politics/crypto = 90–91% of
