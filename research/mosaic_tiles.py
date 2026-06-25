@@ -19,6 +19,10 @@ import re
 import httpx
 import pandas as pd
 
+from app.config import get_settings
+from app.core.http import fetch_json, make_client
+from app.sources import kalshi
+
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 HOUR = 3600
@@ -139,14 +143,48 @@ def _delta(s: pd.Series, hours: int) -> float | None:
     return float(s.iloc[-1] - past.iloc[-1])
 
 
-def _credibility(vol: float) -> str:
-    if vol >= 1_000_000:
+def _credibility(vol: float, venue: str = "PM") -> str:
+    # PM volume is USD; Kalshi volume is contracts — different scales, different gates.
+    deep, solid, mod = (1_000_000, 100_000, 10_000) if venue == "PM" else (10_000, 1_000, 100)
+    if vol >= deep:
         return "DEEP   "
-    if vol >= 100_000:
+    if vol >= solid:
         return "solid  "
-    if vol >= 10_000:
+    if vol >= mod:
         return "moderate"
     return "THIN!  "
+
+
+async def _kalshi_tiles(client: httpx.AsyncClient) -> list[dict]:
+    """Kalshi level tiles (no momentum: no free hourly history). Scans the configured company
+    categories, matches series titles to a sector, and reads current Yes prices via the source."""
+    s = get_settings()
+    out: dict[str, dict] = {}
+    for category in s.company_kalshi_category_list:
+        try:
+            payload = await fetch_json(client, "/series", venue="kalshi",
+                                       limiter=kalshi._limiter, params={"category": category})
+        except Exception:  # noqa: BLE001
+            continue
+        for ser in (payload.get("series") or []):
+            tk, title = ser.get("ticker"), str(ser.get("title", ""))
+            if not tk or _sector_of(title) is None:
+                continue
+            try:
+                refs = await kalshi._events_for_series(client, str(tk), topic="mosaic", limit=80)
+            except Exception:  # noqa: BLE001
+                continue
+            for ref in refs:
+                sector = _sector_of(ref.event_title) or _sector_of(title)
+                if sector is None or not ref.quoted_prices:
+                    continue
+                key = ref.market_key
+                vol = float(ref.volume) if ref.volume is not None else 0.0
+                if key not in out or vol > out[key]["vol"]:
+                    out[key] = {"title": ref.event_title, "vol": vol, "venue": "KALSHI",
+                                "now": float(ref.quoted_prices[0]), "d7": None, "d30": None,
+                                "sector": sector}
+    return list(out.values())
 
 
 def _read(now: float, d7: float | None, d30: float | None, vol: float) -> str:
@@ -169,23 +207,25 @@ TOP_PER_SECTOR = 12
 
 
 async def run() -> None:
+    tiles: dict[str, list[dict]] = {s: [] for s in SECTORS}
     async with httpx.AsyncClient(timeout=30) as client:
+        # --- Polymarket: level + 7d/30d momentum ---
         stubs = await _gather(client)
-        # group by sector, keep the deepest TOP_PER_SECTOR per sector, then fetch history
         by_sector: dict[str, list[dict]] = {s: [] for s in SECTORS}
         for st in stubs.values():
             by_sector[st["sector"]].append(st)
-        tiles: dict[str, list[dict]] = {}
         for sector, lst in by_sector.items():
             lst.sort(key=lambda z: z["vol"], reverse=True)
-            picked = []
             for st in lst[:TOP_PER_SECTOR]:
                 s = await _hourly(client, st["token"])
                 if s.empty:
                     continue
-                picked.append({**st, "now": float(s.iloc[-1]),
-                               "d7": _delta(s, 7 * 24), "d30": _delta(s, 30 * 24)})
-            tiles[sector] = picked
+                tiles[sector].append({**st, "venue": "PM", "now": float(s.iloc[-1]),
+                                      "d7": _delta(s, 7 * 24), "d30": _delta(s, 30 * 24)})
+    # --- Kalshi: level only (no free hourly history) ---
+    async with make_client(base_url=get_settings().kalshi_base_url) as kc:
+        for t in await _kalshi_tiles(kc):
+            tiles[t["sector"]].append(t)
 
     print("\n" + "=" * 100)
     print("MOSAIC TILES by sector — directional reads (level + momentum + credibility), NOT a quant signal")
@@ -194,13 +234,13 @@ async def run() -> None:
         picked = tiles.get(sector, [])
         print(f"\n### {sector}  ({len(picked)} live market{'s' if len(picked) != 1 else ''})")
         if not picked:
-            print("    (no live Polymarket markets — the crowd offers NO tile here; rely on your own work)")
+            print("    (no live markets on Polymarket or Kalshi — the crowd offers NO tile; use your own work)")
             continue
         for r in sorted(picked, key=lambda z: z["vol"], reverse=True):
             d7 = f"{r['d7']*100:+.0f}pp" if r["d7"] is not None else " n/a"
             d30 = f"{r['d30']*100:+.0f}pp" if r["d30"] is not None else " n/a"
-            print(f"  [{_credibility(r['vol'])}] {int(round(r['now']*100)):>3}%  7d {d7:>6}  30d {d30:>6}  "
-                  f"| {r['title'][:62]}")
+            print(f"  {r['venue']:6} [{_credibility(r['vol'], r['venue'])}] {int(round(r['now']*100)):>3}%  "
+                  f"7d {d7:>6}  30d {d30:>6}  | {r['title'][:58]}")
     print("\n" + "-" * 100)
     print("Read: gate on credibility (DEEP/solid = real crowd money; THIN = a whisper). The highest-value")
     print("tile is a DEEP one that DISAGREES with your bottom-up view. Mind resolution clauses (a falling")
