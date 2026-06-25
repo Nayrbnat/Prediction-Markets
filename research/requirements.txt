@@ -1,0 +1,6 @@
+# Research-only deps (NOT app deps — kept out of pyproject to keep the Vercel bundle lean).
+# Install into the venv: pip install -r research/requirements.txt
+numpy>=2
+scipy>=1.16
+statsmodels>=0.14
+pandas>=2
