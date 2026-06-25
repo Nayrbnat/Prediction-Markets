@@ -1,6 +1,9 @@
-# Research-only deps (NOT app deps — kept out of pyproject to keep the Vercel bundle lean).
-# Install into the venv: pip install -r research/requirements.txt
+# Research-only dependencies for the offline lead-lag / liquidity harnesses in this folder.
+# Deliberately NOT in pyproject.toml — the deployed app never imports these (keeps the
+# Vercel bundle lean). Install into the venv:
+#   .venv/Scripts/python.exe -m pip install -r research/requirements.txt
 numpy>=2
 scipy>=1.16
 statsmodels>=0.14
 pandas>=2
+httpx>=0.27
