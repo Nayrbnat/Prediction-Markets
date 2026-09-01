@@ -144,6 +144,15 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = ""
 
+    # ---- Telegram (leave token/chat blank to use ConsoleTelegramSender) -
+    # Reuses the MAIN Hezzian bot token (only 4 bots allowed in the group) — do NOT
+    # create a new bot identity. The topic (forum thread) id is optional: blank/unset
+    # posts to the group's General thread rather than crashing the cron.
+    telegram_api_base_url: str = "https://api.telegram.org"
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""  # supergroup chat id (e.g. -1001234567890)
+    telegram_topic_polymarket: str = ""  # forum topic (message_thread_id); blank = General
+
     # ---- v2 only (unused in v1) ----------------------------------------
     polygon_rpc_url: str | None = None
     ctf_exchange_address: str | None = None
