@@ -13,7 +13,9 @@ from app.config import get_settings
 from app.core.db import create_pool
 from app.core.logging import get_logger, setup_logging
 from app.notifications.email import make_email_sender
+from app.notifications.telegram import make_telegram_sender
 from app.persistence.repository import PostgresMarketRepository
+from app.services import notify
 from app.services.digest_render import render_digest
 from app.services.digest_service import build_digest
 
@@ -40,9 +42,15 @@ async def run() -> None:
             },
         )
 
-        sender = make_email_sender(settings)
-        recipients = settings.digest_recipients or ["<no recipients configured>"]
-        await sender.send(subject=subject, html=html, text=text, to=recipients)
+        await notify.fan_out(
+            sender=make_email_sender(settings),
+            tg_sender=make_telegram_sender(settings),
+            subject=subject,
+            html=html,
+            text=text,
+            recipients=settings.digest_recipients,
+            context="digest_cli",
+        )
     finally:
         await pool.close()
 
