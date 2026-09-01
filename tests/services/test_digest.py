@@ -471,6 +471,33 @@ async def test_run_daily_sends_email_when_enabled() -> None:
     assert len(call["text"]) > 0
 
 
+async def test_run_daily_sends_telegram_alongside_email() -> None:
+    """run_daily fans the digest out to an injected Telegram sink too."""
+    from app.services.ingestion_service import run_daily
+
+    class FakeTelegramSender:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def send(self, *, text: str) -> None:
+            self.texts.append(text)
+
+    settings = _settings(digest_enabled=True, digest_to="user@example.com")
+    repo = InMemoryMarketRepository()
+    sender = FakeEmailSender()
+    tg = FakeTelegramSender()
+
+    await repo.seed([_obs("m1", "Yes", "0.50")], snapshot_date=YESTERDAY)
+    await repo.seed([_obs("m1", "Yes", "0.70")], snapshot_date=TODAY)
+    gw = FakeGateway()
+
+    await run_daily(repo=repo, gateway=gw, sender=sender, settings=settings, tg_sender=tg)
+
+    assert len(sender.calls) == 1
+    assert len(tg.texts) == 1
+    assert tg.texts[0] == sender.last_call["text"]  # same TEXT body to both sinks
+
+
 async def test_run_daily_skips_email_when_disabled() -> None:
     from app.services.ingestion_service import run_daily
 
