@@ -19,7 +19,8 @@ from app.core.logging import get_logger
 from app.models.company import CompanyScan
 from app.models.responses import RefreshResult
 from app.notifications.email import make_email_sender
-from app.services import company_scan, ingestion_service
+from app.notifications.telegram import make_telegram_sender
+from app.services import company_scan, ingestion_service, notify
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -37,10 +38,12 @@ async def refresh(
     if repo is None:
         raise PersistenceError("no database configured; cannot ingest")
     sender = make_email_sender(settings)
+    tg_sender = make_telegram_sender(settings)
     return await ingestion_service.run_daily(
         repo=repo,
         gateway=request.app.state.gateway,
         sender=sender,
+        tg_sender=tg_sender,
         settings=settings,
     )
 
@@ -72,10 +75,15 @@ async def company_scan_run(authorization: str | None = Header(default=None)) -> 
         await gamma.aclose()
         await kalshi.aclose()
 
-    recipients = settings.digest_recipients
-    if recipients:
-        sender = make_email_sender(settings)
-        subject, html, text = company_scan.render_company_scan(result)
-        await sender.send(subject=subject, html=html, text=text, to=recipients)
-        logger.info("company_scan.emailed", extra={"recipients": len(recipients)})
+    # Fan the listing out to email (when recipients set) and Telegram (when configured).
+    subject, html, text = company_scan.render_company_scan(result)
+    await notify.fan_out(
+        sender=make_email_sender(settings),
+        tg_sender=make_telegram_sender(settings),
+        subject=subject,
+        html=html,
+        text=text,
+        recipients=settings.digest_recipients,
+        context="company_scan",
+    )
     return result

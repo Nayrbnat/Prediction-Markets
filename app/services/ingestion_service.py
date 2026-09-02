@@ -19,8 +19,9 @@ from app.core.logging import get_logger
 from app.models.domain import MarketObservation
 from app.models.responses import RefreshResult
 from app.notifications.email import EmailSender
+from app.notifications.telegram import TelegramSender, make_telegram_sender
 from app.persistence.repository import MarketRepository
-from app.services import pricing
+from app.services import notify, pricing
 from app.services.digest_render import render_digest
 from app.services.digest_service import build_digest
 from app.services.gateway import Gateway
@@ -130,11 +131,13 @@ async def run_daily(
     gateway: Gateway,
     sender: EmailSender,
     settings: Settings,
+    tg_sender: TelegramSender | None = None,
 ) -> RefreshResult:
-    """Ingest, then (if digest_enabled) build and send the daily digest email.
+    """Ingest, then (if digest_enabled) build and fan the daily digest out to every sink.
 
-    Steps: ingest → build_digest → render_digest → send.
-    Returns the RefreshResult from the ingestion run.
+    Steps: ingest → build_digest → render_digest → fan_out (email + Telegram).
+    Email and Telegram are independent: either can be unconfigured or fail without
+    affecting the other. Returns the RefreshResult from the ingestion run.
     """
     # Step 1: ingest
     result = await run_ingestion(repo=repo, gateway=gateway, settings=settings)
@@ -147,17 +150,20 @@ async def run_daily(
     digest = await build_digest(repo, settings)
     subject, html, text = render_digest(digest)
 
-    recipients = settings.digest_recipients
-    if not recipients:
-        logger.warning(
-            "daily.digest_no_recipients",
-            extra={"reason": "digest_to is empty; skipping send"},
-        )
-        return result
-
-    await sender.send(subject=subject, html=html, text=text, to=recipients)
+    # Step 3: fan out to email + Telegram (each sink guards its own config/failure).
+    if tg_sender is None:
+        tg_sender = make_telegram_sender(settings)
+    await notify.fan_out(
+        sender=sender,
+        tg_sender=tg_sender,
+        subject=subject,
+        html=html,
+        text=text,
+        recipients=settings.digest_recipients,
+        context="daily_digest",
+    )
     logger.info(
         "daily.digest_sent",
-        extra={"mover_count": digest.mover_count, "recipients": len(recipients)},
+        extra={"mover_count": digest.mover_count},
     )
     return result
