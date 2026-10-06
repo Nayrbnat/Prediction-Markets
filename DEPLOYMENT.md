@@ -1,7 +1,7 @@
 # DEPLOYMENT.md
 
 How this system is hosted. **v1 runs entirely on Vercel:** the FastAPI app serves the API, and a
-Vercel cron drives the 2-hourly ingester; Postgres is **Neon**, provisioned through the Vercel
+Vercel cron drives the daily ingester; Postgres is **Neon**, provisioned through the Vercel
 Marketplace. This document covers that setup and the Vercel constraints that shape it.
 
 ---
@@ -14,7 +14,7 @@ hitting `/internal/refresh`).
 
 ```
                          Vercel (serverless, @vercel/python)
-   every 2h (cron)  ─▶  GET /internal/refresh ──┐
+   daily 06:00 (cron) ─▶ GET /internal/refresh ──┐
                                                  ├─▶  app/  ──▶  Neon Postgres (pooled)
    callers  ─ HTTP ─▶  POST /analyze, /markets/* ┘            observations + change-log
 ```
@@ -31,14 +31,18 @@ GitHub Actions writing the same Postgres (§4).
 ```json
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "builds": [{ "src": "app/main.py", "use": "@vercel/python" }],
-  "routes": [{ "src": "/(.*)", "dest": "app/main.py" }],
-  "crons": [{ "path": "/internal/refresh", "schedule": "0 */2 * * *" }]
+  "crons": [
+    { "path": "/internal/refresh", "schedule": "0 6 * * *" },
+    { "path": "/internal/company-scan", "schedule": "0 7 */5 * *" }
+  ]
 }
 ```
 
-The cron is just an authenticated HTTP request Vercel makes on schedule; the handler checks
-`CRON_SECRET`. Crons run only on **production** deployments.
+Build/route config is no longer pinned here — the app is auto-detected as the ASGI handler
+(`[tool.vercel] entrypoint = "app.main:app"` in `pyproject.toml`). Two crons run: a **daily**
+refresh at 06:00 UTC and a **company-scan every 5 days** at 07:00 UTC. Each cron is just an
+authenticated HTTP request Vercel makes on schedule; the handler checks `CRON_SECRET`. Crons run
+only on **production** deployments.
 
 ---
 

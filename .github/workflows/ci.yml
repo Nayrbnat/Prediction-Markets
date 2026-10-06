@@ -1,0 +1,30 @@
+name: CI
+
+# Prediction-Markets had no automated gate — nothing enforced ruff or the test
+# suite before a change reached main or Vercel. This is that gate. The suite
+# mocks all network and the repository, so it needs no database or secrets.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (editable + dev extras)
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Test (pytest)
+        run: pytest -q

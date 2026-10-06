@@ -51,6 +51,9 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# research/ is exploratory analysis scripts (print-heavy notebooks-as-code), not
+# the deployed app; lint the product, not the scratchpad.
+extend-exclude = ["research"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
